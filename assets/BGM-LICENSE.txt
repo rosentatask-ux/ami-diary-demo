@@ -1,0 +1,14 @@
+Background music for 阿咪日记 demo
+================================
+
+Track: Dreamy Flashback
+Artist: Kevin MacLeod (incompetech.com)
+License: Creative Commons Attribution 4.0 (CC BY 4.0)
+Source: https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1100532
+License text: https://creativecommons.org/licenses/by/4.0/
+
+Required attribution (CC BY):
+  Music: Dreamy Flashback by Kevin MacLeod (incompetech.com)
+  Licensed under Creative Commons: By Attribution 4.0 License
+
+This replaces the previous synthetic loop. Do not replace with unauthorized commercial tracks (e.g. NetEase downloads).

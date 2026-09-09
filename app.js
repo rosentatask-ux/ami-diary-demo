@@ -24,6 +24,10 @@
   let draftVideoUrl = ""; // 会话内视频预览，不进 localStorage
   const sessionVideos = new Map(); // entryId -> blob URL
   let blobPersistTimer = null;
+  let cropSourceUrl = ""; // 未裁切原图，供调整取景
+  let cropPendingMediaType = "image";
+  let cropPendingVideoUrl = "";
+  let cropSession = null;
 
   const SEED_ENTRIES = [
     {
@@ -91,12 +95,20 @@
       image: "assets/ami-p3-calendar.png",
     },
     {
-      id: "seed-0517",
-      dateISO: "2026-05-17",
-      pet: "小黑",
-      text: "晚上非要挤进被子边缘，却不许碰背。只把下巴搁到手指上，算是最大的信任。",
-      caption: "只准摸下巴",
-      image: "assets/ami-p1-capture.png",
+      id: "seed-0520",
+      dateISO: "2026-05-20",
+      pet: "小橘",
+      text: "小橘和小花今天一起玩疯了，互相追着跑，最后依偎在窗边一起晒太阳。",
+      caption: "两只一起玩",
+      image: "assets/ami-memories.png",
+    },
+    {
+      id: "seed-0522",
+      dateISO: "2026-05-22",
+      pet: "小橘",
+      text: "小橘和小黑又打架了，互相咬着抢地盘，吵完小橘一整天都不想理小黑。",
+      caption: "又掐架了",
+      image: "assets/ami-theater-select.png",
     },
   ];
 
@@ -113,6 +125,7 @@
       entries: [],
       todos: [],
       pets: [], // { id, name, entryCount, chars, traits, theaterUnlocked, avatar }
+      relations: [], // { a, b, score, good, bad, evidence: string[] }
       draft: { text: "", image: "", pet: "", mediaType: "image" },
       calYear: now.getFullYear(),
       calMonth: now.getMonth(),
@@ -335,6 +348,7 @@
         entries: Array.isArray(parsed.entries) ? parsed.entries : [],
         todos: Array.isArray(parsed.todos) ? parsed.todos : [],
         pets,
+        relations: Array.isArray(parsed.relations) ? parsed.relations : [],
         draft: {
           ...base.draft,
           ...(parsed.draft || {}),
@@ -366,6 +380,7 @@
           entries,
           todos: state.todos,
           pets,
+          relations: state.relations || [],
           draft: draftSafe,
           calYear: state.calYear,
           calMonth: state.calMonth,
@@ -459,6 +474,158 @@
     return audioCtx;
   }
 
+  const BGM_VOL = 0.18;
+  const BGM_MUTE_KEY = "ami_bgm_muted";
+  let bgmWantOn = true;
+  let bgmUnlockBound = false;
+
+  function bgmEl() {
+    return document.getElementById("bgm-audio");
+  }
+
+  function bgmBtn() {
+    return document.getElementById("bgm-toggle");
+  }
+
+  function readBgmMuted() {
+    try {
+      return localStorage.getItem(BGM_MUTE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  function writeBgmMuted(muted) {
+    try {
+      localStorage.setItem(BGM_MUTE_KEY, muted ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function syncBgmButton() {
+    const btn = bgmBtn();
+    if (!btn) return;
+    // 按用户意图显示：默认开；仅手动关闭才显示划掉
+    const muted = !bgmWantOn;
+    btn.classList.toggle("is-muted", muted);
+    btn.classList.toggle("is-on", !muted);
+    btn.setAttribute("aria-pressed", muted ? "false" : "true");
+    btn.title = muted ? "点击开启背景音乐" : "点击关闭背景音乐";
+  }
+
+  async function playBgm() {
+    const audio = bgmEl();
+    if (!audio || !bgmWantOn) {
+      syncBgmButton();
+      return false;
+    }
+    audio.loop = true;
+    try {
+      ensureAudio();
+      // 先静音 play，提高自动播放成功率，再恢复音量
+      audio.muted = true;
+      audio.volume = BGM_VOL;
+      await audio.play();
+      audio.muted = false;
+      audio.volume = 0.02;
+      const target = BGM_VOL;
+      const steps = 10;
+      for (let i = 1; i <= steps; i++) {
+        await new Promise((r) => setTimeout(r, 35));
+        if (!bgmWantOn || audio.paused) break;
+        audio.volume = (target * i) / steps;
+      }
+      if (bgmWantOn && !audio.paused) {
+        audio.muted = false;
+        audio.volume = target;
+      }
+      syncBgmButton();
+      return !audio.paused;
+    } catch {
+      try {
+        audio.muted = false;
+        audio.volume = BGM_VOL;
+        await audio.play();
+        syncBgmButton();
+        return !audio.paused;
+      } catch {
+        syncBgmButton();
+        return false;
+      }
+    }
+  }
+
+  function pauseBgm() {
+    const audio = bgmEl();
+    if (audio) {
+      audio.pause();
+      audio.muted = false;
+    }
+    syncBgmButton();
+  }
+
+  function toggleBgm() {
+    if (bgmWantOn && bgmEl() && !bgmEl().paused) {
+      bgmWantOn = false;
+      writeBgmMuted(true);
+      pauseBgm();
+      toast("背景音乐已关闭");
+      return;
+    }
+    bgmWantOn = true;
+    writeBgmMuted(false);
+    syncBgmButton();
+    playBgm().then((ok) => {
+      if (!ok) toast("点一下屏幕任意处即可开始播放");
+      else toast("背景音乐已开启");
+    });
+  }
+
+  function bindBgmUnlockOnce() {
+    if (bgmUnlockBound) return;
+    bgmUnlockBound = true;
+    const unlock = (e) => {
+      if (!bgmWantOn) return;
+      if (e.target?.closest?.("#bgm-toggle")) return;
+      const audio = bgmEl();
+      if (audio && !audio.paused) {
+        app.removeEventListener("pointerdown", unlock);
+        return;
+      }
+      playBgm().then((ok) => {
+        if (ok) app.removeEventListener("pointerdown", unlock);
+      });
+    };
+    app.addEventListener("pointerdown", unlock, { passive: true });
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) return;
+      if (bgmWantOn && bgmEl()?.paused) playBgm();
+    });
+  }
+
+  function initBgm() {
+    // 进入小程序默认开启（清掉历史误关记录）
+    bgmWantOn = true;
+    writeBgmMuted(false);
+    const audio = bgmEl();
+    if (audio) {
+      audio.loop = true;
+      audio.setAttribute("playsinline", "");
+      audio.setAttribute("webkit-playsinline", "");
+      audio.addEventListener("play", syncBgmButton);
+      audio.addEventListener("pause", () => {
+        syncBgmButton();
+      });
+    }
+    syncBgmButton();
+    bindBgmUnlockOnce();
+    playBgm();
+    setTimeout(() => {
+      if (bgmWantOn && bgmEl()?.paused) playBgm();
+    }, 400);
+  }
+
   function playShutter() {
     const ctx = ensureAudio();
     if (!ctx) return;
@@ -507,7 +674,9 @@
     motor.stop(now + 1.2);
   }
 
-  function toast(msg) {
+  let pendingTodoTip = null;
+
+  function toast(msg, ms = 1700) {
     toastEl.hidden = false;
     toastEl.textContent = msg;
     toastEl.classList.add("show");
@@ -515,7 +684,18 @@
     toastTimer = setTimeout(() => {
       toastEl.classList.remove("show");
       setTimeout(() => (toastEl.hidden = true), 220);
-    }, 1700);
+    }, ms);
+  }
+
+  function flushPendingTodoTip() {
+    if (!pendingTodoTip) return;
+    const sample =
+      pendingTodoTip.sample || "猫粮快吃完了，可能需要在最近一个月内补充";
+    pendingTodoTip = null;
+    toast(
+      `已经为您摘录了一些您今日提到的注意事项（例如：${sample}）。具体的 To-do list 任务可以翻看手账本当中的「任务档案」。`,
+      5600
+    );
   }
 
   function flash() {
@@ -620,20 +800,67 @@
     const t = String(text || "").trim();
     if (!t) return [];
     const hit =
-      /要买|记得|别忘|待办|提醒|补充|预约|该\S{0,6}了|快用完|只剩|下周|本周内|需要买|猫砂|猫粮|驱虫|体检/.test(
+      /要买|记得|别忘|待办|提醒|补充|预约|该\S{0,6}了|快用完|只剩|快吃完|下周|本周内|一个月|需要买|猫砂|猫粮|驱虫|体检|注意事项/.test(
         t
       );
     if (!hit) return [];
-    // 按句号拆，留下像待办的短句；否则整段入库
     const parts = t
       .split(/[。！？\n]/)
       .map((s) => s.trim())
       .filter(Boolean)
       .filter((s) =>
-        /要买|记得|别忘|待办|提醒|补充|预约|该|快用完|只剩|猫砂|猫粮|驱虫|体检|需要/.test(s)
+        /要买|记得|别忘|待办|提醒|补充|预约|该|快用完|只剩|快吃完|猫砂|猫粮|驱虫|体检|需要|一个月|本周/.test(
+          s
+        )
       );
     const list = parts.length ? parts : [t];
     return list.map((s) => (s.length > 40 ? s.slice(0, 40) + "…" : s)).slice(0, 3);
+  }
+
+  function inferDueISO(text) {
+    const now = new Date();
+    const addDays = (n) => {
+      const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + n);
+      return formatDateISO(d);
+    };
+    const t = String(text || "");
+    if (/今天|今日|马上|立刻|赶紧/.test(t)) return addDays(0);
+    if (/明天/.test(t)) return addDays(1);
+    if (/本周|这周|周内/.test(t)) return addDays(7);
+    if (/下周/.test(t)) return addDays(14);
+    if (/最近一个月|一个月内|本月内|月内/.test(t)) return addDays(30);
+    if (/快用完|只剩|快吃完/.test(t)) return addDays(14);
+    return addDays(7);
+  }
+
+  function formatDueLabel(dueISO) {
+    if (!dueISO) return "未设截止";
+    const m = String(dueISO).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return dueISO;
+    return `${m[2]}月${m[3]}日前`;
+  }
+
+  function sortedOpenTodos() {
+    return state.todos
+      .filter((t) => !t.done)
+      .slice()
+      .sort((a, b) => {
+        const da = a.dueISO || "9999-12-31";
+        const db = b.dueISO || "9999-12-31";
+        if (da !== db) return da < db ? -1 : 1;
+        return String(a.id).localeCompare(String(b.id));
+      });
+  }
+
+  function ensureTodoDefaults() {
+    let changed = false;
+    (state.todos || []).forEach((t) => {
+      if (!t.dueISO && !t.done) {
+        t.dueISO = inferDueISO(t.text);
+        changed = true;
+      }
+    });
+    if (changed) saveState();
   }
 
   function ingestTextSignals(text, { fromEntry = false } = {}) {
@@ -649,18 +876,22 @@
       if (pet) createdPets.push(pet);
     });
     let todoAdded = 0;
+    const addedTodos = [];
     todos.forEach((line) => {
       const exists = state.todos.some((x) => !x.done && x.text === line);
       if (exists) return;
-      state.todos.unshift({
+      const item = {
         id: "t-" + Date.now() + "-" + todoAdded,
         text: line,
-        source: "来自日记抽取",
+        source: "来自今日日记",
         done: false,
-      });
+        dueISO: inferDueISO(line),
+      };
+      state.todos.unshift(item);
+      addedTodos.push(item);
       todoAdded += 1;
     });
-    return { names, todoAdded, pets: createdPets };
+    return { names, todoAdded, pets: createdPets, addedTodos };
   }
 
   function guessPet(text) {
@@ -671,17 +902,191 @@
     return "";
   }
 
+  const REL_GOOD_RE =
+    /一起玩|一起晒|一起趴|一起睡|玩得很|玩得可|玩疯|追逐嬉戏|互相舔|依偎|依着|蹭来蹭去|好朋友|关系好|很亲|亲昵|黏在一起|陪着玩|打闹玩|互舔|一起趴窗边|抢着睡/;
+  const REL_BAD_RE =
+    /打架|打起来|互掐|掐架|吵架|拌嘴|抢地盘|抢食|讨厌|嫌弃|不理|不想理|躲着|追打|冷战|咬对方|互相咬|打对方|欺负|闹翻|关系差|关系不好/;
+
+  function pairKey(a, b) {
+    const x = normalizePetName(a);
+    const y = normalizePetName(b);
+    return x < y ? `${x}|${y}` : `${y}|${x}`;
+  }
+
+  function ensureRelation(a, b) {
+    const ka = normalizePetName(a);
+    const kb = normalizePetName(b);
+    if (!ka || !kb || ka === kb) return null;
+    if (!Array.isArray(state.relations)) state.relations = [];
+    const key = pairKey(ka, kb);
+    let rel = state.relations.find((r) => pairKey(r.a, r.b) === key);
+    if (!rel) {
+      const [x, y] = key.split("|");
+      rel = { a: x, b: y, score: 0, good: 0, bad: 0, evidence: [] };
+      state.relations.push(rel);
+    }
+    return rel;
+  }
+
+  /** 从一句日记里抽多宠互动信号 */
+  function harvestRelationsFromText(text, { dateLabel = "" } = {}) {
+    const names = extractPetNames(text);
+    const set = new Set(names);
+    if (set.size < 2) return [];
+    const list = [...set];
+    const hits = [];
+    const sentences = String(text || "")
+      .split(/[。！？；;\n]/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const chunks = sentences.length ? sentences : [String(text || "")];
+
+    for (let i = 0; i < list.length; i++) {
+      for (let j = i + 1; j < list.length; j++) {
+        const a = list[i];
+        const b = list[j];
+        let tone = 0;
+        let snippet = "";
+        for (const chunk of chunks) {
+          if (!chunk.includes(a) || !chunk.includes(b)) continue;
+          if (REL_BAD_RE.test(chunk)) {
+            tone = -1;
+            snippet = chunk.slice(0, 36);
+            break;
+          }
+          if (REL_GOOD_RE.test(chunk)) {
+            tone = 1;
+            snippet = chunk.slice(0, 36);
+            break;
+          }
+          if (!snippet) {
+            tone = 0;
+            snippet = chunk.slice(0, 36);
+          }
+        }
+        if (!snippet) {
+          const whole = String(text || "");
+          if (REL_BAD_RE.test(whole)) tone = -1;
+          else if (REL_GOOD_RE.test(whole)) tone = 1;
+          snippet = whole.slice(0, 36);
+        }
+        const rel = ensureRelation(a, b);
+        if (!rel) continue;
+        if (tone > 0) {
+          rel.good += 1;
+          rel.score += 2;
+        } else if (tone < 0) {
+          rel.bad += 1;
+          rel.score -= 2;
+        } else {
+          rel.score += 0.3;
+        }
+        const note = `${dateLabel ? dateLabel + " · " : ""}${snippet}${snippet.length >= 36 ? "…" : ""}`;
+        if (note && !rel.evidence.includes(note)) {
+          rel.evidence.unshift(note);
+          rel.evidence = rel.evidence.slice(0, 6);
+        }
+        hits.push({ a, b, tone, rel });
+      }
+    }
+    return hits;
+  }
+
+  function rebuildRelationsFromDiary() {
+    state.relations = [];
+    const sorted = [...state.entries].sort((a, b) => entryStamp(a) - entryStamp(b));
+    sorted.forEach((e) => {
+      const body = [e.caption, e.text].filter(Boolean).join("。");
+      const withPet =
+        e.pet && !String(body || "").includes(e.pet) ? `${e.pet}：${body}` : body;
+      harvestRelationsFromText(withPet, {
+        dateLabel: e.dateISO || e.date || "",
+      });
+    });
+  }
+
+  function relationsForPet(petName) {
+    const n = normalizePetName(petName);
+    if (!n || !Array.isArray(state.relations)) return [];
+    return state.relations
+      .filter((r) => r.a === n || r.b === n)
+      .map((r) => ({
+        ...r,
+        other: r.a === n ? r.b : r.a,
+        vibe:
+          r.score <= -1.5 || r.bad > r.good
+            ? "bad"
+            : r.score >= 1.5 || r.good > r.bad
+              ? "good"
+              : "mixed",
+      }))
+      .sort((a, b) => Math.abs(b.score) - Math.abs(a.score));
+  }
+
+  function summarizeRelationsForPet(petName) {
+    const list = relationsForPet(petName);
+    if (!list.length) return "";
+    const goods = list.filter((r) => r.vibe === "good").map((r) => r.other);
+    const bads = list.filter((r) => r.vibe === "bad").map((r) => r.other);
+    const mixed = list.filter((r) => r.vibe === "mixed").map((r) => r.other);
+    const lines = [];
+    if (goods.length) lines.push(`处得不错：${goods.join("、")}`);
+    if (bads.length) lines.push(`不太对付：${bads.join("、")}`);
+    if (mixed.length) lines.push(`偶尔同框：${mixed.join("、")}`);
+    return lines.join("\n");
+  }
+
+  function relationAwareReply(petName, userMsg) {
+    const list = relationsForPet(petName);
+    if (!list.length) return null;
+    const goods = list.filter((r) => r.vibe === "good");
+    const bads = list.filter((r) => r.vibe === "bad");
+    const askHome =
+      /在家|干什么|做什么|今天|最近|和谁|跟谁|玩|吵架|打架|关系|朋友|讨厌/.test(
+        String(userMsg || "")
+      );
+    if (!askHome && Math.random() > 0.45) return null;
+
+    const g = goods[0]?.other;
+    const b = bads[0]?.other;
+    if (g && b) {
+      return `（${petName}）\n我跟${g}玩得挺好的，一起晒太阳、互相追着跑。\n可是${b}……我一直不太想理它，靠近就想躲开。`;
+    }
+    if (g) {
+      return `（${petName}）\n在家的话，多半在跟${g}玩，或者挨着它趴一会儿。日记里我们也老一起出现。`;
+    }
+    if (b) {
+      return `（${petName}）\n别提${b}。一见面就容易吵，我能躲多远躲多远。`;
+    }
+    const m = list[0]?.other;
+    return m
+      ? `（${petName}）\n家里还有${m}。我们偶尔同框，关系还说不清，你多记几篇就明白了。`
+      : null;
+  }
+
+  function syncRelBox(petName) {
+    const box = document.getElementById("rel-box");
+    const text = document.getElementById("rel-text");
+    if (!box || !text) return;
+    const summary = summarizeRelationsForPet(petName);
+    if (!summary) {
+      box.hidden = true;
+      text.textContent = "";
+      return;
+    }
+    box.hidden = false;
+    text.textContent = summary;
+  }
+
   let shelfManaging = false;
 
   function buildShelf() {
     const shelf = document.getElementById("book-shelf");
     const empty = document.getElementById("shelf-empty");
-    const sub = document.getElementById("shelf-sub");
     const manageBtn = document.getElementById("shelf-manage-btn");
     if (!shelf) return;
 
-    const openTodos = state.todos.filter((t) => !t.done);
-    const showTodo = state.todos.length > 0;
+    const openTodos = sortedOpenTodos();
     const pets = state.pets;
 
     shelf.innerHTML = "";
@@ -691,15 +1096,16 @@
       manageBtn.textContent = shelfManaging ? "完成管理" : "管理本子";
     }
 
-    if (showTodo) {
+    // 首次使用前就默认有「任务管理」本
+    {
       const wrap = document.createElement("div");
       wrap.className = "mini-book-wrap";
       wrap.innerHTML = `
-        <button type="button" class="mini-book is-todo" data-act="open-book" data-book="todo" aria-label="待办本">
+        <button type="button" class="mini-book is-todo" data-act="open-book" data-book="todo" aria-label="任务管理">
           <span class="mini-spine"></span>
           <span class="mini-face">
-            <strong>待办本</strong>
-            <em>${openTodos.length ? openTodos.length + " 件" : "To-do"}</em>
+            <strong>任务管理</strong>
+            <em>${openTodos.length ? openTodos.length + " 件待办" : "任务档案"}</em>
           </span>
         </button>`;
       shelf.appendChild(wrap);
@@ -725,16 +1131,9 @@
       shelf.appendChild(wrap);
     });
 
-    const isEmpty = !showTodo && pets.length === 0;
+    const isEmpty = false;
     shelf.classList.toggle("is-empty", isEmpty);
-    if (empty) empty.hidden = !isEmpty;
-    if (sub) {
-      sub.textContent = shelfManaging
-        ? "管理中：可改名或删除角色本"
-        : isEmpty
-          ? "点「新增本子」创建，或在日记里写上宠物名"
-          : "点本子打开 · 「管理本子」可改名/删除";
-    }
+    if (empty) empty.hidden = true;
   }
 
   function addPetBook() {
@@ -782,6 +1181,7 @@
     state.entries.forEach((e) => {
       if (e.pet === name) e.pet = "";
     });
+    state.relations = (state.relations || []).filter((r) => r.a !== name && r.b !== name);
     if (currentBookPet === name) currentBookPet = state.pets[0]?.name || "";
     if (currentPetId === name) currentPetId = state.pets[0]?.name || "";
     saveState();
@@ -817,6 +1217,160 @@
 
   let theaterManaging = false;
   let avatarTargetPet = "";
+
+  function firstDiaryPhotoForPet(petName) {
+    const n = normalizePetName(petName);
+    if (!n) return "";
+    const related = state.entries
+      .filter((e) => {
+        if (!e) return false;
+        const hit =
+          e.pet === n ||
+          String(e.text || "").includes(n) ||
+          String(e.caption || "").includes(n);
+        if (!hit) return false;
+        const img = String(e.image || "");
+        if (!isUsableImage(img)) return false;
+        // 排除占位图
+        if (img.includes("eject-cat") || img.includes("ami-theater-select")) return false;
+        return true;
+      })
+      .sort((a, b) => {
+        const da = a.dateISO || "";
+        const db = b.dateISO || "";
+        if (da !== db) return da < db ? -1 : 1;
+        return entryStamp(a) - entryStamp(b);
+      });
+    return related[0]?.image || "";
+  }
+
+  /** 自定义头像优先；否则用该角色日记里最早一张照片（智能取景缓存） */
+  const avatarFocusCache = new Map();
+
+  function resolvePetAvatarSrc(pet) {
+    if (!pet) return "";
+    if (pet.avatar && isUsableImage(pet.avatar)) return pet.avatar;
+    const raw = firstDiaryPhotoForPet(pet.name);
+    if (!raw) return "";
+    return avatarFocusCache.get(raw) || raw;
+  }
+
+  /** 按主体（偏宠物脸）裁成正方形，避免只取画面正中 */
+  function smartCropSquare(src, outSize = 320) {
+    return new Promise((resolve) => {
+      if (!src || avatarFocusCache.has(src)) {
+        resolve(avatarFocusCache.get(src) || src);
+        return;
+      }
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const iw = img.naturalWidth || img.width;
+          const ih = img.naturalHeight || img.height;
+          if (!iw || !ih) {
+            resolve(src);
+            return;
+          }
+          const probeW = 72;
+          const probeH = Math.max(24, Math.round((probeW * ih) / iw));
+          const probe = document.createElement("canvas");
+          probe.width = probeW;
+          probe.height = probeH;
+          const pctx = probe.getContext("2d", { willReadFrequently: true });
+          pctx.drawImage(img, 0, 0, probeW, probeH);
+          const data = pctx.getImageData(0, 0, probeW, probeH).data;
+
+          // 用边缘像素估背景色
+          let br = 0,
+            bg = 0,
+            bb = 0,
+            bn = 0;
+          const edge = (x, y) => {
+            const i = (y * probeW + x) * 4;
+            br += data[i];
+            bg += data[i + 1];
+            bb += data[i + 2];
+            bn += 1;
+          };
+          for (let x = 0; x < probeW; x++) {
+            edge(x, 0);
+            edge(x, probeH - 1);
+          }
+          for (let y = 1; y < probeH - 1; y++) {
+            edge(0, y);
+            edge(probeW - 1, y);
+          }
+          br /= bn;
+          bg /= bn;
+          bb /= bn;
+
+          let sumW = 0,
+            sumX = 0,
+            sumY = 0;
+          for (let y = 0; y < probeH; y++) {
+            for (let x = 0; x < probeW; x++) {
+              const i = (y * probeW + x) * 4;
+              const r = data[i],
+                g = data[i + 1],
+                b = data[i + 2];
+              const dr = r - br,
+                dg = g - bg,
+                db = b - bb;
+              const dist = Math.sqrt(dr * dr + dg * dg + db * db);
+              const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+              // 与背景差异大、且不要过曝地板；略偏上的位置加权（脸常在偏上）
+              let score = Math.max(0, dist - 28);
+              if (lum > 235) score *= 0.35;
+              if (lum < 18) score *= 0.5;
+              const yBias = 1.15 - (y / Math.max(1, probeH - 1)) * 0.35;
+              score *= yBias;
+              if (score < 8) continue;
+              sumW += score;
+              sumX += x * score;
+              sumY += y * score;
+            }
+          }
+
+          let cx = iw / 2;
+          let cy = ih * 0.38;
+          if (sumW > 0) {
+            cx = (sumX / sumW) * (iw / probeW);
+            cy = (sumY / sumW) * (ih / probeH);
+          }
+
+          // 正方形取景：略紧一点，更好露出脸
+          const side = Math.min(iw, ih) * 0.92;
+          let sx = cx - side / 2;
+          let sy = cy - side / 2;
+          sx = Math.max(0, Math.min(iw - side, sx));
+          sy = Math.max(0, Math.min(ih - side, sy));
+
+          const canvas = document.createElement("canvas");
+          canvas.width = outSize;
+          canvas.height = outSize;
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(img, sx, sy, side, side, 0, 0, outSize, outSize);
+          const out = canvas.toDataURL("image/jpeg", 0.86);
+          avatarFocusCache.set(src, out);
+          resolve(out);
+        } catch {
+          resolve(src);
+        }
+      };
+      img.onerror = () => resolve(src);
+      img.src = src;
+    });
+  }
+
+  async function hydratePetAvatarDisplay(pet, imgEl) {
+    if (!pet || !imgEl || pet.avatar) return;
+    const raw = imgEl._avatarRaw || firstDiaryPhotoForPet(pet.name);
+    if (!raw) return;
+    const focused = await smartCropSquare(raw);
+    if (imgEl._avatarRaw === raw || imgEl.getAttribute("src") === raw) {
+      imgEl.src = focused;
+    }
+  }
 
   function buildTheater() {
     const page = document.querySelector('.page[data-page="t1"]');
@@ -855,8 +1409,10 @@
       const wrap = document.createElement("div");
       wrap.className = "theater-pet" + (ready ? " is-ready" : "");
       const safe = pet.name.replace(/"/g, "&quot;");
-      const avatarInner = pet.avatar
-        ? `<img src="${pet.avatar}" alt="" />`
+      const rawDiary = !pet.avatar ? firstDiaryPhotoForPet(pet.name) : "";
+      const avatarSrc = resolvePetAvatarSrc(pet);
+      const avatarInner = avatarSrc
+        ? `<img src="${avatarSrc}" alt="" />`
         : `<span class="avatar-letter">${pet.name.slice(0, 1)}</span>`;
       wrap.innerHTML = `
         <div class="theater-pet-avatar" aria-hidden="true">
@@ -875,6 +1431,11 @@
           <button type="button" class="mini-book-tool is-danger" data-act="delete-pet" data-pet="${safe}">删除</button>
         </div>`;
       list.appendChild(wrap);
+      const imgEl = wrap.querySelector(".theater-pet-avatar img");
+      if (imgEl && rawDiary) {
+        imgEl._avatarRaw = rawDiary;
+        if (!avatarFocusCache.has(rawDiary)) hydratePetAvatarDisplay(pet, imgEl);
+      }
     });
   }
 
@@ -898,9 +1459,8 @@
     if (!pet) return;
     try {
       toast("头像处理中…");
-      // 头像更小，单独压缩
       const dataUrl = await compressImage(file);
-      pet.avatar = dataUrl;
+      pet.avatar = await smartCropSquare(dataUrl);
       saveState();
       buildTheater();
       if (pageId === "t2" && currentPetId === pet.name) {
@@ -922,15 +1482,24 @@
     if (btn) btn.dataset.pet = pet?.name || "";
     if (profileName) profileName.textContent = pet?.name || "—";
     if (!img || !letter) return;
-    if (pet?.avatar) {
-      img.src = pet.avatar;
+    const src = resolvePetAvatarSrc(pet);
+    if (src) {
+      const rawDiary = !pet?.avatar ? firstDiaryPhotoForPet(pet.name) : "";
+      img.src = src;
       img.hidden = false;
       letter.hidden = true;
+      if (rawDiary) {
+        img._avatarRaw = rawDiary;
+        if (!avatarFocusCache.has(rawDiary)) hydratePetAvatarDisplay(pet, img);
+      } else {
+        img._avatarRaw = "";
+      }
     } else {
       img.removeAttribute("src");
       img.hidden = true;
       letter.hidden = false;
       letter.textContent = (pet?.name || "—").slice(0, 1);
+      img._avatarRaw = "";
     }
   }
 
@@ -1009,32 +1578,68 @@
     renamePet(name, next);
   }
 
+  /** 富士 Astia / 理光向：浓郁颗粒，不是 sepia 陈旧黄 */
   function applyFilmLook(ctx, width, height) {
     const id = ctx.getImageData(0, 0, width, height);
     const px = id.data;
+    const clamp = (v) => (v < 0 ? 0 : v > 255 ? 255 : v);
     for (let i = 0; i < px.length; i += 4) {
-      const r = px[i],
-        g = px[i + 1],
-        b = px[i + 2];
-      px[i] = Math.min(255, r * 0.42 + g * 0.38 + b * 0.12 + 18);
-      px[i + 1] = Math.min(255, r * 0.28 + g * 0.42 + b * 0.18 + 12);
-      px[i + 2] = Math.min(255, r * 0.18 + g * 0.28 + b * 0.36 + 6);
+      let r = px[i];
+      let g = px[i + 1];
+      let b = px[i + 2];
+
+      // 略提对比（S 曲线感），保留中间调细节
+      const c = 1.14;
+      r = (r - 128) * c + 128;
+      g = (g - 128) * c + 128;
+      b = (b - 128) * c + 128;
+
+      // 饱和：绿/蓝略推（Astia/Velvia 方向），肤色不过度发红发黄
+      const avg = (r + g + b) / 3;
+      r = avg + (r - avg) * 1.16;
+      g = avg + (g - avg) * 1.22;
+      b = avg + (b - avg) * 1.2;
+
+      const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      if (lum > 165) {
+        // 高光微暖，不做 sepia 洗白
+        r += 5;
+        g += 2;
+      } else if (lum < 70) {
+        // 阴影略压深 + 一点点冷感
+        r = r * 0.94 - 2;
+        g = g * 0.96;
+        b = b * 0.98 + 4;
+      }
+
+      // 细颗粒（胶片感），强度随亮度略变
+      const grain = (Math.random() - 0.5) * (10 + (lum / 255) * 6);
+      r += grain;
+      g += grain * 0.92;
+      b += grain * 0.88;
+
+      px[i] = clamp(r);
+      px[i + 1] = clamp(g);
+      px[i + 2] = clamp(b);
     }
     ctx.putImageData(id, 0, 0);
   }
 
   function canvasToCover(canvas) {
-    return canvas.toDataURL("image/jpeg", 0.78);
+    return canvas.toDataURL("image/jpeg", 0.86);
   }
 
-  function compressImage(file) {
+  /** 拍立得相纸窗为正方形，取景/导出/展示统一 1:1 */
+  const CROP_ASPECT = 1;
+  const CROP_OUT_W = 960;
+
+  function loadImageDataUrl(file, maxSide = 1600, withFilm = false) {
     return new Promise((resolve, reject) => {
       const url = URL.createObjectURL(file);
       const img = new Image();
       img.onload = () => {
-        const max = 900;
         let { width, height } = img;
-        const scale = Math.min(1, max / Math.max(width, height));
+        const scale = Math.min(1, maxSide / Math.max(width, height));
         width = Math.round(width * scale);
         height = Math.round(height * scale);
         const canvas = document.createElement("canvas");
@@ -1042,9 +1647,9 @@
         canvas.height = height;
         const ctx = canvas.getContext("2d");
         ctx.drawImage(img, 0, 0, width, height);
-        applyFilmLook(ctx, width, height);
+        if (withFilm) applyFilmLook(ctx, width, height);
         URL.revokeObjectURL(url);
-        resolve(canvas.toDataURL("image/jpeg", 0.7));
+        resolve(canvas.toDataURL("image/jpeg", withFilm ? 0.84 : 0.9));
       };
       img.onerror = () => {
         URL.revokeObjectURL(url);
@@ -1054,7 +1659,297 @@
     });
   }
 
-  /** 从视频抽一帧作拍立得封面（约 0.8s 或中间帧） */
+  function compressImage(file) {
+    // 头像等：只压缩，不套胶片
+    return loadImageDataUrl(file, 900, false);
+  }
+
+  function clampCrop() {
+    if (!cropSession) return;
+    const { nw, nh, scale } = cropSession;
+    const vp = document.getElementById("crop-viewport");
+    if (!vp) return;
+    const W = vp.clientWidth;
+    const H = vp.clientHeight;
+    const sw = nw * scale;
+    const sh = nh * scale;
+    cropSession.tx = Math.min(0, Math.max(W - sw, cropSession.tx));
+    cropSession.ty = Math.min(0, Math.max(H - sh, cropSession.ty));
+  }
+
+  function paintCrop() {
+    if (!cropSession) return;
+    const img = document.getElementById("crop-img");
+    if (!img) return;
+    clampCrop();
+    img.style.width = `${cropSession.nw}px`;
+    img.style.height = `${cropSession.nh}px`;
+    img.style.transform = `translate(${cropSession.tx}px, ${cropSession.ty}px) scale(${cropSession.scale})`;
+  }
+
+  function resetCropFit() {
+    if (!cropSession) return;
+    const vp = document.getElementById("crop-viewport");
+    if (!vp) return;
+    const W = vp.clientWidth;
+    const H = vp.clientHeight;
+    const { nw, nh } = cropSession;
+    cropSession.minScale = Math.max(W / nw, H / nh);
+    cropSession.maxScale = cropSession.minScale * 4;
+    cropSession.scale = cropSession.minScale;
+    cropSession.tx = (W - nw * cropSession.scale) / 2;
+    cropSession.ty = (H - nh * cropSession.scale) / 2;
+    paintCrop();
+  }
+
+  function setCropZoom(factor, cx, cy) {
+    if (!cropSession) return;
+    const vp = document.getElementById("crop-viewport");
+    if (!vp) return;
+    const W = vp.clientWidth;
+    const H = vp.clientHeight;
+    const px = cx == null ? W / 2 : cx;
+    const py = cy == null ? H / 2 : cy;
+    const old = cropSession.scale;
+    const next = Math.min(
+      cropSession.maxScale,
+      Math.max(cropSession.minScale, old * factor)
+    );
+    if (next === old) return;
+    // 以视口点 (px,py) 为缩放中心
+    const imgX = (px - cropSession.tx) / old;
+    const imgY = (py - cropSession.ty) / old;
+    cropSession.scale = next;
+    cropSession.tx = px - imgX * next;
+    cropSession.ty = py - imgY * next;
+    paintCrop();
+  }
+
+  function openCropEditor(dataUrl, { mediaType = "image", videoUrl = "" } = {}) {
+    const modal = document.getElementById("crop-modal");
+    const img = document.getElementById("crop-img");
+    if (!modal || !img) return;
+    cropPendingMediaType = mediaType;
+    cropPendingVideoUrl = videoUrl || "";
+    if (cropSourceUrl && cropSourceUrl.startsWith("blob:")) {
+      try {
+        URL.revokeObjectURL(cropSourceUrl);
+      } catch {
+        /* ignore */
+      }
+    }
+    cropSourceUrl = dataUrl;
+    img.onload = () => {
+      cropSession = {
+        nw: img.naturalWidth,
+        nh: img.naturalHeight,
+        scale: 1,
+        minScale: 1,
+        maxScale: 4,
+        tx: 0,
+        ty: 0,
+      };
+      modal.hidden = false;
+      requestAnimationFrame(() => resetCropFit());
+      toast("拖动调整取景，＋/－缩放");
+    };
+    img.onerror = () => toast("图片打不开，换一张试试");
+    img.src = dataUrl;
+  }
+
+  function closeCropEditor({ reopenPicker = false } = {}) {
+    const modal = document.getElementById("crop-modal");
+    if (modal) modal.hidden = true;
+    cropSession = null;
+    if (reopenPicker) {
+      document.getElementById("p1-file")?.click();
+    }
+  }
+
+  function exportCroppedPolaroid() {
+    if (!cropSession) return null;
+    const img = document.getElementById("crop-img");
+    const vp = document.getElementById("crop-viewport");
+    if (!img || !vp) return null;
+    const W = vp.clientWidth;
+    const H = vp.clientHeight;
+    const outW = CROP_OUT_W;
+    const outH = Math.round(outW / CROP_ASPECT);
+    const canvas = document.createElement("canvas");
+    canvas.width = outW;
+    canvas.height = outH;
+    const ctx = canvas.getContext("2d");
+    const sx = outW / W;
+    const sy = outH / H;
+    ctx.fillStyle = "#1a1a1a";
+    ctx.fillRect(0, 0, outW, outH);
+    ctx.drawImage(
+      img,
+      cropSession.tx * sx,
+      cropSession.ty * sy,
+      cropSession.nw * cropSession.scale * sx,
+      cropSession.nh * cropSession.scale * sy
+    );
+    applyFilmLook(ctx, outW, outH);
+    return canvas.toDataURL("image/jpeg", 0.78);
+  }
+
+  function confirmCrop() {
+    const dataUrl = exportCroppedPolaroid();
+    if (!dataUrl) {
+      toast("取景失败，再试一次");
+      return;
+    }
+    if (cropPendingMediaType === "video") {
+      if (draftVideoUrl && draftVideoUrl !== cropPendingVideoUrl) {
+        try {
+          URL.revokeObjectURL(draftVideoUrl);
+        } catch {
+          /* ignore */
+        }
+      }
+      draftVideoUrl = cropPendingVideoUrl;
+      state.draft.mediaType = "video";
+    } else {
+      if (draftVideoUrl) {
+        try {
+          URL.revokeObjectURL(draftVideoUrl);
+        } catch {
+          /* ignore */
+        }
+        draftVideoUrl = "";
+      }
+      state.draft.mediaType = "image";
+    }
+    state.draft.image = dataUrl;
+    saveState();
+    syncDraftUI();
+    closeCropEditor();
+    toast(state.draft.mediaType === "video" ? "封面已取景 · 放入拍立得" : "已取景 · 放入拍立得");
+  }
+
+  function bindCropGestures() {
+    const vp = document.getElementById("crop-viewport");
+    if (!vp || vp.dataset.bound) return;
+    vp.dataset.bound = "1";
+    let mode = null; // pan | pinch
+    let lastX = 0;
+    let lastY = 0;
+    let lastDist = 0;
+
+    const dist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+    const mid = (a, b) => ({
+      x: (a.clientX + b.clientX) / 2,
+      y: (a.clientY + b.clientY) / 2,
+    });
+
+    vp.addEventListener(
+      "pointerdown",
+      (e) => {
+        if (!cropSession) return;
+        if (e.pointerType === "touch") return; // 触控交给 touch 手势
+        vp.setPointerCapture(e.pointerId);
+        mode = "pan";
+        lastX = e.clientX;
+        lastY = e.clientY;
+        vp.classList.add("is-dragging");
+      },
+      { passive: true }
+    );
+
+    vp.addEventListener(
+      "pointermove",
+      (e) => {
+        if (!cropSession || mode !== "pan" || e.pointerType === "touch") return;
+        const dx = e.clientX - lastX;
+        const dy = e.clientY - lastY;
+        lastX = e.clientX;
+        lastY = e.clientY;
+        cropSession.tx += dx;
+        cropSession.ty += dy;
+        paintCrop();
+      },
+      { passive: true }
+    );
+
+    const endPan = (e) => {
+      if (e && e.pointerType === "touch") return;
+      mode = null;
+      vp.classList.remove("is-dragging");
+    };
+    vp.addEventListener("pointerup", endPan);
+    vp.addEventListener("pointercancel", endPan);
+
+    vp.addEventListener(
+      "touchstart",
+      (e) => {
+        if (!cropSession) return;
+        if (e.touches.length === 2) {
+          mode = "pinch";
+          lastDist = dist(e.touches[0], e.touches[1]);
+          return;
+        }
+        if (e.touches.length === 1) {
+          mode = "pan";
+          lastX = e.touches[0].clientX;
+          lastY = e.touches[0].clientY;
+          vp.classList.add("is-dragging");
+        }
+      },
+      { passive: true }
+    );
+    vp.addEventListener(
+      "touchmove",
+      (e) => {
+        if (!cropSession) return;
+        if (e.touches.length === 2) {
+          mode = "pinch";
+          const d = dist(e.touches[0], e.touches[1]);
+          if (!lastDist) {
+            lastDist = d;
+            return;
+          }
+          const rect = vp.getBoundingClientRect();
+          const m = mid(e.touches[0], e.touches[1]);
+          setCropZoom(d / lastDist, m.x - rect.left, m.y - rect.top);
+          lastDist = d;
+          return;
+        }
+        if (e.touches.length === 1 && mode === "pan") {
+          const dx = e.touches[0].clientX - lastX;
+          const dy = e.touches[0].clientY - lastY;
+          lastX = e.touches[0].clientX;
+          lastY = e.touches[0].clientY;
+          cropSession.tx += dx;
+          cropSession.ty += dy;
+          paintCrop();
+        }
+      },
+      { passive: true }
+    );
+    vp.addEventListener(
+      "touchend",
+      () => {
+        mode = null;
+        lastDist = 0;
+        vp.classList.remove("is-dragging");
+      },
+      { passive: true }
+    );
+
+    vp.addEventListener(
+      "wheel",
+      (e) => {
+        if (!cropSession) return;
+        e.preventDefault();
+        const rect = vp.getBoundingClientRect();
+        setCropZoom(e.deltaY < 0 ? 1.08 : 1 / 1.08, e.clientX - rect.left, e.clientY - rect.top);
+      },
+      { passive: false }
+    );
+  }
+
+  /** 从视频抽一帧（先不打胶片，留给取景导出） */
   function extractVideoCover(file) {
     return new Promise((resolve, reject) => {
       const url = URL.createObjectURL(file);
@@ -1075,7 +1970,7 @@
         const t = Math.min(Math.max(dur * 0.2, 0.1), Math.max(dur - 0.05, 0.1));
         const onSeeked = () => {
           try {
-            const max = 1100;
+            const max = 1400;
             let width = video.videoWidth || 720;
             let height = video.videoHeight || 720;
             if (!width || !height) throw new Error("size");
@@ -1087,9 +1982,7 @@
             canvas.height = height;
             const ctx = canvas.getContext("2d");
             ctx.drawImage(video, 0, 0, width, height);
-            applyFilmLook(ctx, width, height);
-            const cover = canvasToCover(canvas);
-            // 保留 blob URL 供本会话回放；封面进草稿
+            const cover = canvas.toDataURL("image/jpeg", 0.88);
             resolve({ cover, videoUrl: url });
           } catch {
             fail();
@@ -1099,7 +1992,6 @@
         try {
           video.currentTime = t;
         } catch {
-          // 部分机型 seek 失败：直接尝试当前帧
           setTimeout(onSeeked, 120);
         }
       };
@@ -1110,9 +2002,10 @@
 
   function syncDraftUI() {
     const preview = document.getElementById("p1-preview");
-    const hint = document.getElementById("p1-hint");
     const badge = document.getElementById("p1-media-badge");
     const text = document.getElementById("p1-text");
+    const frame = document.getElementById("p1-frame");
+    frame?.classList.toggle("has-draft", Boolean(state.draft.image));
     if (text && text.value !== state.draft.text) text.value = state.draft.text || "";
     if (preview) {
       if (state.draft.image) {
@@ -1126,15 +2019,6 @@
     if (badge) {
       const isVideo = state.draft.mediaType === "video";
       badge.hidden = !isVideo || !state.draft.image;
-    }
-    if (hint) {
-      if (!state.draft.image) {
-        hint.textContent = "点相框选图 · 写一句 · 再点下方相机";
-      } else if (state.draft.mediaType === "video") {
-        hint.textContent = "已选视频 · 写一句后点下方相机";
-      } else {
-        hint.textContent = "已选照片 · 写一句后点下方相机";
-      }
     }
     syncCaptionPh();
   }
@@ -1163,6 +2047,7 @@
     draftVideoUrl = "";
     state.draft = { text: "", image: "", pet: pendingEntry.pet, mediaType: "image" };
     pendingEntry = null;
+    rebuildRelationsFromDiary();
     saveState();
     syncDraftUI();
     buildCalendar();
@@ -1207,6 +2092,8 @@
             polaroid.classList.add("is-developed");
             commitPendingEntry();
             if (cont) cont.hidden = false;
+            // 照片显影完成后提示已摘录的待办
+            setTimeout(() => flushPendingTodoTip(), 280);
           }, 900);
         }, 180);
       }, 380);
@@ -1223,7 +2110,11 @@
       runEjectAnimation();
       p2Timer = setTimeout(() => go("p3"), 5200);
     }
-    if (id === "p3") buildCalendar();
+    if (id === "p3") {
+      buildCalendar();
+      // 若提前跳过吐片页，补一次待办摘录提示
+      flushPendingTodoTip();
+    }
     if (id === "j1") buildShelf();
     if (id === "t1") buildTheater();
     if (id === "j2") {
@@ -1281,28 +2172,57 @@
     return clampTitle(clause, 10) || (pet ? `${pet}的今天` : "今天的阿咪");
   }
 
+  const DEEPSEEK_ENDPOINT = "https://api.deepseek.com/v1/chat/completions";
+  const DEEPSEEK_MODEL = "deepseek-chat";
+
   function getLlmConfig() {
     try {
-      const key = localStorage.getItem("ami_llm_key") || window.AMI_LLM_KEY || "";
+      const key = (localStorage.getItem("ami_llm_key") || window.AMI_LLM_KEY || "").trim();
       if (!key) return null;
       return {
         key,
         endpoint:
           localStorage.getItem("ami_llm_endpoint") ||
           window.AMI_LLM_ENDPOINT ||
-          "https://api.openai.com/v1/chat/completions",
-        model: localStorage.getItem("ami_llm_model") || window.AMI_LLM_MODEL || "gpt-4o-mini",
+          DEEPSEEK_ENDPOINT,
+        model: localStorage.getItem("ami_llm_model") || window.AMI_LLM_MODEL || DEEPSEEK_MODEL,
+        provider: "deepseek",
       };
     } catch {
       return null;
     }
   }
 
+  function llmStatusLabel() {
+    return getLlmConfig() ? "DeepSeek 已接入" : "未接大模型（用本地拟题）";
+  }
+
+  function setupDeepSeekKey() {
+    const cur = localStorage.getItem("ami_llm_key") || "";
+    const tip =
+      "粘贴 DeepSeek API Key（以 sk- 开头）\n\n" +
+      "获取：https://platform.deepseek.com/api_keys\n" +
+      "留空并确定 = 清除 Key，改回本地拟题\n\n" +
+      "说明：浏览器直连可能受跨域限制；失败时会自动用本地规则兜底。";
+    const next = window.prompt(tip, cur);
+    if (next == null) return;
+    const key = String(next).trim();
+    if (!key) {
+      localStorage.removeItem("ami_llm_key");
+      toast("已关闭大模型 · 改用本地拟题");
+      return;
+    }
+    localStorage.setItem("ami_llm_key", key);
+    localStorage.setItem("ami_llm_endpoint", DEEPSEEK_ENDPOINT);
+    localStorage.setItem("ami_llm_model", DEEPSEEK_MODEL);
+    toast("DeepSeek 已保存 · 吐片时会优先用它拟标题");
+  }
+
   async function llmTitleFromStory(text, pet) {
     const cfg = getLlmConfig();
     if (!cfg) return null;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000);
+    const timer = setTimeout(() => controller.abort(), 12000);
     try {
       const res = await fetch(cfg.endpoint, {
         method: "POST",
@@ -1328,11 +2248,15 @@
           ],
         }),
       });
-      if (!res.ok) return null;
+      if (!res.ok) {
+        console.warn("[ami-llm] title http", res.status);
+        return null;
+      }
       const data = await res.json();
       const out = data?.choices?.[0]?.message?.content || "";
       return clampTitle(out.split("\n")[0], 10) || null;
-    } catch {
+    } catch (err) {
+      console.warn("[ami-llm] title fail", err);
       return null;
     } finally {
       clearTimeout(timer);
@@ -1343,7 +2267,11 @@
     const full = String(text || "").trim();
     if (!full) return pet ? `${pet}的今天` : "今天的阿咪";
     const fromLlm = await llmTitleFromStory(full, pet);
-    if (fromLlm) return fromLlm;
+    if (fromLlm) {
+      extractPolaroidTitle._usedLlm = true;
+      return fromLlm;
+    }
+    extractPolaroidTitle._usedLlm = false;
     return localTitleFromStory(full, pet);
   }
 
@@ -1366,17 +2294,26 @@
       ensurePet(pet, { unlockTheater: true, addEntry: true, chars: text.length });
     }
 
-    toast(text ? "正在拟短标题…" : "准备吐片…");
+    toast(text ? `正在拟短标题…（${llmStatusLabel()}）` : "准备吐片…");
+    extractPolaroidTitle._usedLlm = false;
     const caption = text
       ? await extractPolaroidTitle(text, pet)
       : pet
         ? `${pet}的今天`
         : "今天的阿咪";
 
+    const via = text && extractPolaroidTitle._usedLlm ? " · DeepSeek" : text ? " · 本地" : "";
     if (signals.todoAdded) {
-      toast(`标题「${caption}」· 已抽 ${signals.todoAdded} 条待办`);
+      const sample =
+        signals.addedTodos?.[0]?.text || "猫粮快吃完了，可能需要尽快补充";
+      pendingTodoTip = {
+        count: signals.todoAdded,
+        sample,
+      };
+      toast(`短标题：${caption}${via}`);
     } else {
-      toast(`短标题：${caption}`);
+      pendingTodoTip = null;
+      toast(`短标题：${caption}${via}`);
     }
 
     const iso = formatDateISO(new Date());
@@ -1407,30 +2344,28 @@
       return;
     }
     try {
-      toast(isVideo ? "正在抽取视频封面…" : "显影处理中…");
-      if (draftVideoUrl) {
-        URL.revokeObjectURL(draftVideoUrl);
-        draftVideoUrl = "";
-      }
+      toast(isVideo ? "正在抽取视频封面…" : "打开取景…");
       if (isVideo) {
         const { cover, videoUrl } = await extractVideoCover(file);
-        state.draft.image = cover;
-        state.draft.mediaType = "video";
-        draftVideoUrl = videoUrl;
-        saveState();
-        syncDraftUI();
-        toast("视频已选 · 封面放入拍立得");
+        openCropEditor(cover, { mediaType: "video", videoUrl });
       } else {
-        const dataUrl = await compressImage(file);
-        state.draft.image = dataUrl;
-        state.draft.mediaType = "image";
-        saveState();
-        syncDraftUI();
-        toast("已放入拍立得");
+        const dataUrl = await loadImageDataUrl(file, 1600, false);
+        openCropEditor(dataUrl, { mediaType: "image" });
       }
     } catch {
       toast(isVideo ? "视频读取失败，换一个试试" : "图片读取失败，换一张试试");
     }
+  }
+
+  function reopenCropOrPick() {
+    if (cropSourceUrl) {
+      openCropEditor(cropSourceUrl, {
+        mediaType: state.draft.mediaType === "video" ? "video" : "image",
+        videoUrl: draftVideoUrl || cropPendingVideoUrl,
+      });
+      return;
+    }
+    document.getElementById("p1-file")?.click();
   }
 
   let mediaRecorder = null;
@@ -1586,7 +2521,7 @@
     if (!grid) return;
     const y = state.calYear;
     const m = state.calMonth;
-    if (label) label.textContent = `${y}年${m + 1}月`;
+    if (label) label.textContent = `${y}年${pad2(m + 1)}月`;
 
     const first = new Date(y, m, 1);
     const startCol = first.getDay();
@@ -1600,7 +2535,8 @@
 
     grid.style.gridTemplateRows = `repeat(${cells.length / 7}, 1fr)`;
     grid.innerHTML = "";
-    cells.forEach((d) => {
+    const weekNames = ["日", "一", "二", "三", "四", "五", "六"];
+    cells.forEach((d, idx) => {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "cal-cell";
@@ -1610,6 +2546,7 @@
         grid.appendChild(btn);
         return;
       }
+      const w = weekNames[idx % 7];
       const num = document.createElement("span");
       num.className = "cal-day-num";
       num.textContent = String(d);
@@ -1624,8 +2561,8 @@
         btn.setAttribute(
           "aria-label",
           hits.length > 1
-            ? `${m + 1}月${d}日 · ${hits.length}张`
-            : `${m + 1}月${d}日打卡`
+            ? `${m + 1}月${d}日周${w} · ${hits.length}张`
+            : `${m + 1}月${d}日周${w}打卡`
         );
         const stack = document.createElement("span");
         stack.className = "cal-stack";
@@ -1646,6 +2583,7 @@
         btn.appendChild(stack);
       } else {
         btn.tabIndex = -1;
+        btn.setAttribute("aria-label", `${m + 1}月${d}日周${w}`);
       }
       grid.appendChild(btn);
     });
@@ -1657,7 +2595,7 @@
     state.calMonth = dt.getMonth();
     saveState();
     buildCalendar();
-    toast(`${state.calYear}年${state.calMonth + 1}月`);
+    toast(`${state.calYear}年${pad2(state.calMonth + 1)}月`);
   }
 
   let dayHits = [];
@@ -1781,6 +2719,66 @@
     renderDayEntry();
   }
 
+  function clearMemoryPickCache() {
+    try {
+      localStorage.removeItem("ami_memory_pick_v1");
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function deleteCurrentDayEntry() {
+    const e = dayHits[dayHitIndex];
+    if (!e) return;
+    const ok = window.confirm(
+      "删除这张拍立得及其背后的故事？\n阅历缩略图、手账相关日记、放映室素材与精选回顾里对应内容也会去掉。"
+    );
+    if (!ok) return;
+
+    const id = e.id;
+    const petName = e.pet;
+    const textLen = String(e.text || e.caption || "").length;
+
+    state.entries = state.entries.filter((x) => x.id !== id);
+
+    const pet = findPetByName(petName);
+    if (pet) {
+      pet.entryCount = Math.max(0, (pet.entryCount || 1) - 1);
+      pet.chars = Math.max(0, (pet.chars || 0) - textLen);
+    }
+
+    if (sessionVideos.has(id)) {
+      const url = sessionVideos.get(id);
+      sessionVideos.delete(id);
+      if (url && String(url).startsWith("blob:")) {
+        try {
+          URL.revokeObjectURL(url);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+
+    clearMemoryPickCache();
+    rebuildRelationsFromDiary();
+    saveState();
+    buildCalendar();
+    buildShelf();
+    buildTheater();
+    if (pageId === "m1") buildMemories(true);
+    if (pageId === "j2") renderJournal();
+
+    dayHits = dayHits.filter((x) => x.id !== id);
+    if (!dayHits.length) {
+      closeDayModal();
+      toast("已删除这张拍立得");
+      return;
+    }
+    if (dayHitIndex >= dayHits.length) dayHitIndex = dayHits.length - 1;
+    renderDayEntry();
+    toast("已删除这张拍立得");
+  }
+
   function toggleDayFlip(e) {
     if (dayDidSwipe) {
       dayDidSwipe = false;
@@ -1788,7 +2786,7 @@
     }
     // 背面滚动文字时不触发翻面
     if (e.target.closest(".day-story")) return;
-    if (e.target.closest("video, .flip-close, .day-nav")) return;
+    if (e.target.closest("video, .flip-close, .day-nav, .day-delete")) return;
     const flip = document.getElementById("day-flip");
     if (!flip) return;
     flip.classList.toggle("is-flipped");
@@ -1806,7 +2804,7 @@
     stage.addEventListener(
       "pointerdown",
       (e) => {
-        if (e.target.closest("video, .day-story, .flip-close, .day-nav")) return;
+        if (e.target.closest("video, .day-story, .flip-close, .day-nav, .day-delete")) return;
         tracking = true;
         startX = e.clientX;
         startY = e.clientY;
@@ -1922,26 +2920,66 @@
   function buildTodos() {
     const list = document.getElementById("todo-list");
     if (!list) return;
+    ensureTodoDefaults();
     list.innerHTML = "";
-    state.todos.filter((t) => !t.done).forEach((t) => {
+    const open = sortedOpenTodos();
+    if (!open.length) {
+      const empty = document.createElement("li");
+      empty.className = "todo-item";
+      empty.style.border = "0";
+      empty.innerHTML = `<div class="todo-body"><p style="color:#9aa094;font-size:1rem">暂无待办。日记里提到买猫粮、预约体检等，拍完照片后会自动摘录到这里。</p></div>`;
+      list.appendChild(empty);
+      return;
+    }
+    open.forEach((t) => {
       const li = document.createElement("li");
       li.className = "todo-item";
       li.dataset.id = t.id;
       li.innerHTML = `
         <button type="button" class="todo-check" aria-label="完成"></button>
         <div class="todo-body">
-          <p>${t.text}</p>
-          <small>${t.source || "手动添加"}</small>
-        </div>`;
+          <p>${escapeHtml(t.text)}</p>
+          <small>${escapeHtml(t.source || "手动添加")}</small>
+        </div>
+        <button type="button" class="todo-due" data-act="edit-todo-due" data-id="${t.id}" aria-label="修改截止日期">${formatDueLabel(t.dueISO)}</button>`;
       li.querySelector(".todo-check").addEventListener("click", () => completeTodo(li, t.id));
       list.appendChild(li);
     });
   }
 
+  function editTodoDue(id) {
+    const item = state.todos.find((t) => t.id === id);
+    if (!item || item.done) return;
+    const cur = item.dueISO || formatDateISO(new Date());
+    const next = window.prompt("设定完成截止日期（格式：年-月-日，如 2026-09-20）", cur);
+    if (next == null) return;
+    const v = String(next).trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+      toast("请按 2026-09-20 这种格式填写");
+      return;
+    }
+    const parts = v.split("-").map(Number);
+    const dt = new Date(parts[0], parts[1] - 1, parts[2]);
+    if (
+      dt.getFullYear() !== parts[0] ||
+      dt.getMonth() !== parts[1] - 1 ||
+      dt.getDate() !== parts[2]
+    ) {
+      toast("日期无效，请再检查一下");
+      return;
+    }
+    item.dueISO = v;
+    saveState();
+    buildTodos();
+    buildShelf();
+    toast(`已改为 ${formatDueLabel(v)}，列表已重排`);
+  }
+
   function completeTodo(li, id) {
     if (li.classList.contains("is-checked")) return;
-    li.querySelector(".todo-check").classList.add("is-on");
+    li.querySelector(".todo-check")?.classList.add("is-on");
     li.classList.add("is-checked");
+    // 变灰划线 → 向下移出并消失
     setTimeout(() => {
       li.classList.add("is-done");
       setTimeout(() => {
@@ -1949,10 +2987,10 @@
         if (item) item.done = true;
         saveState();
         li.remove();
-        // 若待办清空且从未有宠物本，书架会变空；有历史待办仍保留本子
         buildShelf();
-      }, 480);
-    }, 420);
+        if (!sortedOpenTodos().length) buildTodos();
+      }, 520);
+    }, 380);
   }
 
   function addTodo(text) {
@@ -1963,6 +3001,7 @@
       text: t,
       source: "手动添加",
       done: false,
+      dueISO: inferDueISO(t),
     });
     saveState();
     buildTodos();
@@ -2058,6 +3097,127 @@
     return t.length > n ? t.slice(0, n) + "…" : t || "……";
   }
 
+  function diaryTextsForPet(petName) {
+    const n = normalizePetName(petName);
+    return state.entries
+      .filter((e) => e.pet === n || String(e.text || "").includes(n))
+      .sort((a, b) => entryStamp(b) - entryStamp(a))
+      .map((e) => {
+        const cap = (e.caption || "").trim();
+        const body = (e.text || "").trim();
+        if (cap && body && cap !== body) return `${cap}：${body}`;
+        return body || cap;
+      })
+      .filter(Boolean)
+      .slice(0, 12);
+  }
+
+  function localTraitsFromDiary(petName, snippets) {
+    const joined = snippets.join("\n");
+    const bits = [];
+    const push = (s) => {
+      if (s && !bits.includes(s) && bits.length < 3) bits.push(s);
+    };
+    if (/晒太阳|阳光|窗边|午后/.test(joined)) push("偏爱安静光亮处");
+    if (/纸箱|纸盒|钻/.test(joined)) push("好奇、爱钻小空间");
+    if (/零食|罐头|猫粮|饿|要吃/.test(joined)) push("对吃的很上心");
+    if (/玩|玩具|逗猫|扑/.test(joined)) push("玩心重、易被逗起");
+    if (/睡|趴|打盹|懒/.test(joined)) push("节奏偏慢、爱趴着");
+    if (/怕|吓|躲|吸尘器|雷/.test(joined)) push("遇惊吓会退缩");
+    if (/踩|键盘|书桌|腿|黏/.test(joined)) push("黏人、爱凑热闹");
+    if (/夜|夜里|黑/.test(joined)) push("夜里更有精神");
+    if (!bits.length) {
+      return `${petName}还在慢慢成形：日记里有日常，但性格轮廓还不清晰。可再记几篇，或先手写一两句。`;
+    }
+    return `${petName}给人的感觉偏「${bits.join("、")}」。以上是从近期日记里抽出的简短判断，可随时改。`;
+  }
+
+  async function llmTraitsFromDiary(petName, snippets) {
+    const cfg = getLlmConfig();
+    if (!cfg || !snippets.length) return null;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    try {
+      const res = await fetch(cfg.endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${cfg.key}`,
+        },
+        signal: controller.signal,
+        body: JSON.stringify({
+          model: cfg.model,
+          temperature: 0.4,
+          max_tokens: 140,
+          messages: [
+            {
+              role: "system",
+              content:
+                "你是宠物日记分析助手。根据日记写出该宠物的「性格描述」，中文。" +
+                "要求：2～3 句即可；先给简短、抽象的性格判断（如黏人、谨慎、爱玩），再最多带 1～2 个很小的日记细节作点缀；细节尽量少。" +
+                "只依据给定日记，不要编造未出现的事实。不要标题，不要列表符号，直接输出正文。",
+            },
+            {
+              role: "user",
+              content: `宠物名：${petName}\n日记摘录：\n- ${snippets.join("\n- ")}\n\n请输出性格描述：`,
+            },
+          ],
+        }),
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      const out = String(data?.choices?.[0]?.message?.content || "").trim();
+      return out ? out.replace(/^["「]|["」]$/g, "").slice(0, 220) : null;
+    } catch (err) {
+      console.warn("[ami-llm] traits fail", err);
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  function syncTraitMeta(pet, source) {
+    const meta = document.getElementById("trait-meta");
+    if (!meta) return;
+    const n = diaryTextsForPet(pet?.name).length;
+    if (source === "llm") meta.textContent = `已用 DeepSeek · 依据 ${n} 条日记`;
+    else if (source === "local") meta.textContent = `本地生成 · 依据 ${n} 条日记`;
+    else if (pet?.traits) meta.textContent = n ? `可改 · 现有 ${n} 条相关日记` : "可手改";
+    else meta.textContent = n ? `有 ${n} 条日记可生成` : "暂无相关日记";
+  }
+
+  async function generateTraitsForCurrentPet() {
+    const pet = findPetByName(currentPetId);
+    if (!pet) {
+      toast("还没有角色");
+      return;
+    }
+    const snippets = diaryTextsForPet(pet.name);
+    const btn = document.getElementById("gen-traits-btn");
+    const box = document.getElementById("trait-text");
+    if (!snippets.length) {
+      toast("还没有关于它的日记，先去记几篇再生成");
+      return;
+    }
+    if (btn) btn.disabled = true;
+    toast(getLlmConfig() ? "DeepSeek 正在写性格…" : "正在根据日记整理性格…");
+    try {
+      let text = await llmTraitsFromDiary(pet.name, snippets);
+      let source = "llm";
+      if (!text) {
+        text = localTraitsFromDiary(pet.name, snippets);
+        source = "local";
+      }
+      pet.traits = text;
+      if (box) box.value = text;
+      saveState();
+      syncTraitMeta(pet, source);
+      toast(source === "llm" ? "性格已生成（DeepSeek）" : "性格已生成（本地）");
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
   function selectPet(petId) {
     if (theaterManaging) {
       toast("管理中：请先点「完成管理」");
@@ -2077,21 +3237,21 @@
     document.getElementById("chat-pet").textContent = currentPetId;
     document.getElementById("card-pet-name").textContent = currentPetId;
     const traitBox = document.getElementById("trait-text");
-    const warn = document.getElementById("trait-warn");
-    if (warn) {
-      warn.hidden = false;
-      warn.textContent = ready
-        ? "已有一定素材，可以试着聊聊；你仍可改上方角色卡。"
-        : "可以先建卡、先进来看看。目前收集的信息还不够，还不能够进行比较好的交互——多记几篇日记后，性格会慢慢清晰。";
-      warn.style.background = ready ? "#e8f2ea" : "#f3ebe0";
-      warn.style.color = ready ? "#4d6b55" : "#6a5e4e";
+    const help = document.getElementById("trait-help");
+    const diaryN = diaryTextsForPet(currentPetId).length;
+    if (help) {
+      help.textContent = pet.traits
+        ? "下面是这只宠物的性格描述（角色卡）。可直接改字，改完点输入框外会自动保存；也会影响放映室怎么回你。"
+        : "「它的性格」= 角色卡正文。现在还是空的：可手写，或点「用日记生成」让 AI/本地规则根据日记填写。";
     }
     if (traitBox) {
       traitBox.value = pet.traits || "";
-      traitBox.placeholder = ready
-        ? "性格摘要，可随时改…"
-        : "可先留空；有素材后会更准，也可自己先写几句";
+      traitBox.placeholder = diaryN
+        ? "还没有性格描述。点「用日记生成」，或自己写：爱晒太阳、黏人、怕吸尘器…"
+        : "还没有性格描述。先记几篇带它名字的日记，再回来生成。";
     }
+    syncTraitMeta(pet, pet.traits ? "saved" : "");
+    syncRelBox(currentPetId);
     document.getElementById("chat-input").placeholder = ready
       ? `跟${currentPetId}说点什么…`
       : "先聊聊也行，完整互动还要再等等…";
@@ -2118,6 +3278,14 @@
     }
     const pack = PETS[currentPetId] || PETS._default;
     addPetBubble(pack.welcome(currentPetId));
+    const relLine = summarizeRelationsForPet(currentPetId);
+    if (relLine) {
+      setTimeout(() => {
+        addPetBubble(
+          `（${currentPetId}想了想家里那些事）\n${relLine.replace(/\n/g, "；")}`
+        );
+      }, 700);
+    }
   }
 
   function addPetBubble(text) {
@@ -2126,8 +3294,8 @@
     wrap.dataset.pet = currentPetId;
     wrap.innerHTML = `<div>${text.replace(/\n/g, "<br>")}</div>
       <div class="bubble-actions">
-        <button type="button" data-fb="like">喜欢</button>
-        <button type="button" data-fb="dislike">不喜欢</button>
+        <button type="button" data-fb="like" aria-label="点赞" title="喜欢">👍</button>
+        <button type="button" data-fb="dislike" aria-label="点踩" title="不喜欢">👎</button>
       </div>`;
     chatLog.appendChild(wrap);
     chatLog.scrollTop = chatLog.scrollHeight;
@@ -2179,55 +3347,302 @@
       petRec.traits = traits;
       saveState();
     }
+    const relReply = relationAwareReply(currentPetId, text);
+    if (relReply) {
+      setTimeout(() => addPetBubble(relReply), 420);
+      return;
+    }
     const replyFn = pack.replies[Math.floor(Math.random() * pack.replies.length)];
     setTimeout(() => addPetBubble(replyFn(traits, text, currentPetId)), 420);
   }
 
-  function buildMemories() {
+  function escapeHtml(s) {
+    return String(s || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function hashSeed(str) {
+    let h = 2166136261;
+    for (let i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return h >>> 0;
+  }
+
+  function seededShuffle(arr, seed) {
+    const a = [...arr];
+    let s = seed >>> 0;
+    for (let i = a.length - 1; i > 0; i--) {
+      s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+      const j = s % (i + 1);
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  }
+
+  const MEMORY_THEMES = [
+    {
+      id: "eat",
+      title: "干饭时刻",
+      hint: "跟吃有关的那些瞬间",
+      keywords: /吃|饭|粮|罐头|零食|觅食|小鱼干|饿|碗/,
+    },
+    {
+      id: "sun",
+      title: "追光的日子",
+      hint: "窗边、光斑与午后",
+      keywords: /晒|太阳|阳光|窗边|午后|光斑|暖/,
+    },
+    {
+      id: "play",
+      title: "玩耍时光",
+      hint: "闹腾与好奇",
+      keywords: /玩|玩具|逗|扑|纸箱|跑|跳|抓/,
+    },
+    {
+      id: "sleep",
+      title: "小憩合集",
+      hint: "软成一滩的瞬间",
+      keywords: /睡|趴|盹|懒|窝|打呼|眯/,
+    },
+    {
+      id: "night",
+      title: "夜里的它",
+      hint: "夜晚与安静",
+      keywords: /夜|夜里|晚|月光|黑/,
+    },
+    { id: "onthisday", title: "那年今日", hint: "往年今天留下的照片", type: "onthisday" },
+    { id: "recent", title: "最近的温柔", hint: "近两周里挑出来的", type: "recent" },
+    { id: "pet", title: "只关于它", hint: "某一只的专场回顾", type: "pet" },
+  ];
+
+  function entryBlob(e) {
+    return `${e.caption || ""} ${e.text || ""} ${e.pet || ""}`;
+  }
+
+  function filterEntriesByTheme(entries, theme, seed) {
+    const today = new Date();
+    const md = `${pad2(today.getMonth() + 1)}-${pad2(today.getDate())}`;
+    if (theme.type === "onthisday") {
+      return entries.filter((e) => String(e.dateISO || "").slice(5) === md);
+    }
+    if (theme.type === "recent") {
+      const cut = Date.now() - 14 * 24 * 3600 * 1000;
+      return entries.filter((e) => {
+        const t = Date.parse(e.dateISO || "");
+        return Number.isFinite(t) ? t >= cut : true;
+      });
+    }
+    if (theme.type === "pet") {
+      const pets = [...new Set(entries.map((e) => e.pet).filter(Boolean))];
+      if (!pets.length) return [];
+      const name = pets[seed % pets.length];
+      theme.title = `${name}专场`;
+      theme.hint = `只看「${name}」的精选`;
+      return entries.filter((e) => e.pet === name);
+    }
+    if (theme.keywords) {
+      return entries.filter((e) => theme.keywords.test(entryBlob(e)));
+    }
+    return entries;
+  }
+
+  function pickMemoryCollection(forceRefresh = false) {
+    const withPhoto = state.entries.filter((e) => e.image);
+    const dayKey = formatDateISO(new Date());
+    const storeKey = "ami_memory_pick_v1";
+    if (!forceRefresh) {
+      try {
+        const cached = JSON.parse(localStorage.getItem(storeKey) || "null");
+        if (cached?.day === dayKey && Array.isArray(cached.ids) && cached.ids.length) {
+          const map = new Map(withPhoto.map((e) => [e.id, e]));
+          const hits = cached.ids.map((id) => map.get(id)).filter(Boolean);
+          if (hits.length) {
+            return {
+              theme: { id: cached.themeId, title: cached.title, hint: cached.hint },
+              hits,
+              fromCache: true,
+            };
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+
+    const seedBase = hashSeed(dayKey + (forceRefresh ? String(Date.now()) : ""));
+    const scored = MEMORY_THEMES.map((raw, i) => {
+      const theme = { ...raw };
+      const hits = filterEntriesByTheme(withPhoto, theme, seedBase + i);
+      return { theme, hits };
+    }).filter((c) => c.hits.length > 0);
+
+    let chosen;
+    if (!scored.length) {
+      chosen = {
+        theme: { id: "all", title: "精选回顾", hint: "还没有足够主题素材" },
+        hits: withPhoto,
+      };
+    } else {
+      chosen = scored[seedBase % scored.length];
+    }
+
+    const target = Math.min(15, Math.max(5, 5 + (seedBase % 11))); // 5–15
+    const shuffled = seededShuffle(chosen.hits, seedBase);
+    const hits = shuffled.slice(0, Math.min(target, shuffled.length));
+
+    try {
+      localStorage.setItem(
+        storeKey,
+        JSON.stringify({
+          day: dayKey,
+          themeId: chosen.theme.id,
+          title: chosen.theme.title,
+          hint: chosen.theme.hint,
+          ids: hits.map((e) => e.id),
+        })
+      );
+    } catch {
+      /* ignore */
+    }
+    return { theme: chosen.theme, hits, fromCache: false };
+  }
+
+  async function polishMemoryTitle(theme, hits) {
+    const cfg = getLlmConfig();
+    if (!cfg || !hits.length) return null;
+    const samples = hits
+      .slice(0, 6)
+      .map((e) => (e.caption || e.text || "").trim())
+      .filter(Boolean)
+      .slice(0, 5);
+    if (!samples.length) return null;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    try {
+      const res = await fetch(cfg.endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${cfg.key}`,
+        },
+        signal: controller.signal,
+        body: JSON.stringify({
+          model: cfg.model,
+          temperature: 0.6,
+          max_tokens: 24,
+          messages: [
+            {
+              role: "system",
+              content:
+                "你为宠物相册写「精选回顾」主题名。中文，不超过10个字，不要标点引号，只输出主题名。像诗意一点的相册标题。",
+            },
+            {
+              role: "user",
+              content: `底色主题：${theme.title}\n照片短句：${samples.join(" / ")}\n请输出主题名：`,
+            },
+          ],
+        }),
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      const out = String(data?.choices?.[0]?.message?.content || "")
+        .trim()
+        .split("\n")[0]
+        .replace(/[「」"']/g, "");
+      return out && out.length <= 12 ? out : null;
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  let memSwipeGuard = false;
+
+  function buildMemories(forceRefresh = false) {
     const rail = document.getElementById("mem-rail");
     const dots = document.getElementById("mem-dots");
+    const titleEl = document.getElementById("mem-title");
+    const subEl = document.getElementById("mem-sub");
     if (!rail || !dots) return;
+
     const withPhoto = state.entries.filter((e) => e.image);
     if (!withPhoto.length) {
-      rail.innerHTML = `<article class="mem-slide"><div class="mem-polaroid"><p style="padding:40px 16px;text-align:center;color:#6b736c">还没有可回顾的照片<br/>去记一张吧</p></div></article>`;
+      rail.innerHTML = `<article class="mem-slide"><div class="mem-polaroid"><p class="mem-cap" style="padding:40px 16px;text-align:center;color:#6b736c">还没有可回顾的照片<br/>去记一张吧</p></div></article>`;
       dots.innerHTML = "";
-      const title = document.getElementById("mem-title");
-      if (title) title.textContent = "精选回顾";
+      if (titleEl) titleEl.textContent = "精选回顾";
+      if (subEl) subEl.textContent = "有照片后，会按主题挑一小辑给你";
       return;
     }
-    const slides = withPhoto.slice(0, 12).map((e) => ({
+
+    const pack = pickMemoryCollection(forceRefresh);
+    const slides = pack.hits.map((e) => ({
+      id: e.id,
       src: e.image,
       title: e.caption || formatJournalDate(e.dateISO),
-      cap: `${e.pet || "日记"} · ${e.dateISO.slice(5)}`,
+      meta: `${e.pet || "日记"} · ${formatJournalDate(e.dateISO)}`,
+      story: (e.text || "").trim() || e.caption || "这一天，被轻轻收进拍立得里。",
     }));
+
+    if (titleEl) titleEl.textContent = pack.theme.title || "精选回顾";
+    if (subEl) {
+      subEl.textContent = `${pack.theme.hint || "主题精选"} · 共 ${slides.length} 张`;
+    }
 
     rail.innerHTML = slides
       .map(
-        (s) => `<article class="mem-slide" data-title="${s.title}">
-          <div class="mem-polaroid">
-            <img src="${s.src}" alt="${s.cap}" draggable="false" />
-            <p>${s.cap}</p>
+        (s) => `<article class="mem-slide">
+          <div class="mem-flip" data-act="mem-flip" role="button" tabindex="0" aria-label="翻面看故事">
+            <div class="mem-face mem-front">
+              <div class="mem-polaroid">
+                <img src="${escapeHtml(s.src)}" alt="" draggable="false" />
+                <p class="mem-cap">${escapeHtml(s.title)}</p>
+              </div>
+            </div>
+            <div class="mem-face mem-back">
+              <div class="mem-polaroid mem-polaroid-back">
+                <p class="mem-back-meta">${escapeHtml(s.meta)}</p>
+                <div class="mem-story">${escapeHtml(s.story)}</div>
+                <p class="mem-back-hint">轻触翻回正面</p>
+              </div>
+            </div>
           </div>
         </article>`
       )
       .join("");
     dots.innerHTML = slides.map((_, i) => `<span${i === 0 ? ' class="is-on"' : ""}></span>`).join("");
 
-    const title = document.getElementById("mem-title");
     let memIndex = 0;
     const sync = () => {
       const w = rail.clientWidth || 1;
       const idx = Math.round(rail.scrollLeft / w);
       memIndex = Math.max(0, Math.min(slides.length - 1, idx));
-      if (title) title.textContent = slides[memIndex].title;
       [...dots.children].forEach((d, i) => d.classList.toggle("is-on", i === memIndex));
+      // 滑走时收起翻面
+      rail.querySelectorAll(".mem-flip.is-flipped").forEach((el, i) => {
+        const slide = el.closest(".mem-slide");
+        const si = [...rail.children].indexOf(slide);
+        if (si !== memIndex) el.classList.remove("is-flipped");
+      });
     };
     const goMem = (i) => {
       memIndex = Math.max(0, Math.min(slides.length - 1, i));
       rail.scrollTo({ left: memIndex * rail.clientWidth, behavior: "smooth" });
       sync();
     };
-    rail.onscroll = sync;
+    rail.onscroll = () => {
+      memSwipeGuard = true;
+      sync();
+      clearTimeout(rail._memScrollTimer);
+      rail._memScrollTimer = setTimeout(() => {
+        memSwipeGuard = false;
+      }, 120);
+    };
     dots.onclick = (e) => {
       const span = e.target.closest("span");
       if (!span) return;
@@ -2238,6 +3653,7 @@
     let memStartLeft = 0;
     rail.onpointerdown = (e) => {
       if (e.pointerType === "touch") return;
+      if (e.target.closest(".mem-story")) return;
       memDragging = true;
       memStartX = e.clientX;
       memStartLeft = rail.scrollLeft;
@@ -2263,6 +3679,21 @@
       rail.scrollLeft = 0;
       sync();
     });
+
+    // DeepSeek 润色主题名（有 Key 时）
+    if (!pack.fromCache || forceRefresh) {
+      polishMemoryTitle(pack.theme, pack.hits).then((nice) => {
+        if (!nice || !titleEl) return;
+        titleEl.textContent = nice;
+        try {
+          const raw = JSON.parse(localStorage.getItem("ami_memory_pick_v1") || "{}");
+          raw.title = nice;
+          localStorage.setItem("ami_memory_pick_v1", JSON.stringify(raw));
+        } catch {
+          /* ignore */
+        }
+      });
+    }
   }
 
   app.addEventListener("click", (e) => {
@@ -2276,8 +3707,38 @@
       case "shoot":
         shoot();
         break;
+      case "setup-llm":
+        setupDeepSeekKey();
+        break;
+      case "toggle-bgm":
+        toggleBgm();
+        break;
+      case "mem-refresh":
+        buildMemories(true);
+        toast("已换一辑主题");
+        break;
+      case "mem-flip":
+        if (memSwipeGuard) break;
+        t.classList.toggle("is-flipped");
+        break;
       case "pick-photo":
-        document.getElementById("p1-file")?.click();
+        if (state.draft.image) reopenCropOrPick();
+        else document.getElementById("p1-file")?.click();
+        break;
+      case "crop-ok":
+        confirmCrop();
+        break;
+      case "crop-cancel":
+        closeCropEditor({ reopenPicker: true });
+        break;
+      case "crop-zoom-in":
+        setCropZoom(1.12);
+        break;
+      case "crop-zoom-out":
+        setCropZoom(1 / 1.12);
+        break;
+      case "crop-reset":
+        resetCropFit();
         break;
       case "voice-input":
         startVoiceInput();
@@ -2306,6 +3767,9 @@
       case "close-modal":
         closeDayModal();
         break;
+      case "delete-day-entry":
+        deleteCurrentDayEntry();
+        break;
       case "open-day":
         openDay(Number(t.dataset.day));
         break;
@@ -2318,6 +3782,9 @@
       case "open-book":
         openBook(t.dataset.book);
         break;
+      case "edit-todo-due":
+        editTodoDue(t.dataset.id);
+        break;
       case "pet-avatar":
         pickPetAvatar(t.dataset.pet);
         break;
@@ -2326,6 +3793,9 @@
         break;
       case "theater-manage":
         toggleTheaterManage();
+        break;
+      case "gen-traits":
+        generateTraitsForCurrentPet();
         break;
       case "shelf-add":
         addPetBook();
@@ -2349,6 +3819,7 @@
     e.target.value = "";
     if (file) await onPickMedia(file);
   });
+  bindCropGestures();
 
   document.getElementById("theater-avatar-file")?.addEventListener("change", async (e) => {
     const file = e.target.files?.[0];
@@ -2434,10 +3905,13 @@
     if (state.calMonth == null) state.calMonth = now.getMonth();
   }
 
+  ensureTodoDefaults();
   buildCalendar();
   syncDraftUI();
   buildShelf();
   buildTheater();
+  rebuildRelationsFromDiary();
   hydrateBlobs().catch(() => {});
+  initBgm();
   go("p1");
 })();
