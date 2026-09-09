@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <title>阿咪日记</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Ma+Shan+Zheng&family=Noto+Sans+SC:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="app.css?v=20260909e" />
+</head>
+<body>
+  <div class="app" id="app">
+    <!-- P1 录入：成片为底；可选图 / 写字 / 语音，提交后写入本地日记 -->
+    <section class="page is-on" data-page="p1">
+      <div class="bg" style="background-image:url('assets/ami-p1-capture.png')"></div>
+      <input type="file" id="p1-file" accept="image/*,video/*" hidden />
+      <div class="p1-frame" id="p1-frame">
+        <img class="p1-preview" id="p1-preview" alt="" hidden />
+        <span class="p1-media-badge" id="p1-media-badge" hidden>视频</span>
+        <button class="ghost hit-upload" type="button" data-act="pick-photo" aria-label="从相册选择照片或视频"></button>
+        <label class="caption-field" for="p1-text">
+          <textarea id="p1-text" rows="1" maxlength="120" spellcheck="false" aria-label="今天阿咪怎样"></textarea>
+          <span class="caption-ph" id="p1-ph" aria-hidden="true">今天阿咪怎样...</span>
+          <span class="caption-caret" id="p1-caret" aria-hidden="true"></span>
+        </label>
+        <button class="ghost hit-mic" type="button" data-act="voice-input" aria-label="语音输入"></button>
+      </div>
+      <p class="p1-hint" id="p1-hint">想记录就选图吐片 · 只想翻看点右下角月历</p>
+      <button class="ghost hit-camera" type="button" data-act="shoot" aria-label="提交吐片"></button>
+      <button class="fab-journal" type="button" data-act="go" data-to="p3" aria-label="进入月历阅览">
+        <span class="fab-journal-spine" aria-hidden="true"></span>
+        <span class="fab-journal-face">
+          <strong>月历</strong>
+          <em>去看看</em>
+        </span>
+      </button>
+    </section>
+
+    <!-- P2 吐片动效：干净 i2 机身 + 槽口向下吐片 -->
+    <section class="page page-eject" data-page="p2">
+      <div class="eject-bg" aria-hidden="true"></div>
+      <p class="eject-title">阿咪日记</p>
+      <div class="eject-stage" id="eject-stage">
+        <div class="cam" id="eject-cam">
+          <div class="cam-flash-burst" id="cam-flash-burst"></div>
+          <img class="cam-photo" src="assets/polaroid-i2.png?v=6" alt="Polaroid i2" draggable="false" />
+          <div class="eject-chute" id="eject-chute">
+            <div class="polaroid" id="eject-polaroid">
+              <div class="polaroid-frame">
+                <div class="polaroid-pic">
+                  <img id="eject-img" src="assets/eject-cat.jpg" alt="" />
+                  <div class="develop-veil" id="develop-veil"></div>
+                </div>
+                <p class="polaroid-cap">
+                  <span id="eject-cap">窗边晒太阳的小橘</span>
+                  <span class="polaroid-date" id="eject-date">2026.09.09</span>
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <button class="pill continue" type="button" data-act="go" data-to="p3" hidden id="eject-continue">轻触进入月历</button>
+    </section>
+
+    <!-- P3 月历 -->
+    <section class="page" data-page="p3">
+      <div class="bg bg-p3" style="background-image:url('assets/ami-p3-calendar-empty.png')"></div>
+      <nav class="top-nav" aria-label="月历功能">
+        <button type="button" class="hit hit-j1" data-act="go" data-to="j1" aria-label="手账本"></button>
+        <button type="button" class="hit hit-t1" data-act="go" data-to="t1" aria-label="放映室"></button>
+        <button type="button" class="hit hit-m1" data-act="go" data-to="m1" aria-label="精选回顾"></button>
+      </nav>
+      <div class="cal-month-bar" id="cal-month-bar">
+        <button type="button" class="cal-month-arrow" data-act="month-prev" aria-label="上一月">◀</button>
+        <span class="cal-month-label" id="cal-month-label">2026年9月</span>
+        <button type="button" class="cal-month-arrow" data-act="month-next" aria-label="下一月">▶</button>
+      </div>
+      <div class="cal-grid" id="cal-grid" aria-label="月历打卡"></div>
+      <button class="fab" type="button" data-act="go" data-to="p1" aria-label="再记一张">＋</button>
+    </section>
+
+    <!-- 手账书架：首次为空；有宠物名 / 待办后才出现本子 -->
+    <section class="page page-shelf" data-page="j1">
+      <div class="cover-paper" aria-hidden="true"></div>
+      <header class="shelf-head">
+        <h1>手账本</h1>
+        <p id="shelf-sub">可手动新增本子，也可在管理里改名或删除</p>
+        <div class="shelf-actions">
+          <button type="button" class="shelf-btn" data-act="shelf-add">＋ 新增本子</button>
+          <button type="button" class="shelf-btn" data-act="shelf-manage" id="shelf-manage-btn">管理本子</button>
+        </div>
+      </header>
+      <div class="book-shelf is-empty" id="book-shelf"></div>
+      <p class="shelf-empty" id="shelf-empty">书架还是空的<br />点上方「新增本子」，或在日记里写上宠物名</p>
+      <button class="back" type="button" data-act="go" data-to="p3">返回</button>
+    </section>
+
+    <!-- 待办本 -->
+    <section class="page page-todo" data-page="j-todo">
+      <header class="todo-head">
+        <button type="button" data-act="go" data-to="j1">‹ 书架</button>
+        <h1>待办本</h1>
+      </header>
+      <ul class="todo-list" id="todo-list"></ul>
+      <form class="todo-add" id="todo-add" autocomplete="off">
+        <input type="text" id="todo-input" maxlength="80" placeholder="写一条待办，回车添加" />
+        <button type="submit">添加</button>
+      </form>
+      <p class="todo-tip">勾选完成会保存；待办存在本机</p>
+    </section>
+
+    <!-- 角色日记本：半页窥视 + 滑动 + 翻页 -->
+    <section class="page page-journal" data-page="j2">
+      <div class="journal-stage">
+        <div class="journal-viewport" id="journal-viewport">
+          <div class="journal-track" id="journal-track">
+            <article class="j-page j-left" id="j-left">
+              <p class="j-pet-tag" id="j-pet-tag">小橘</p>
+              <header class="j-date" id="j-date">05.01 · 周三 · 晴</header>
+              <p class="j-body" id="j-body"></p>
+              <p class="j-hint">← 向左滑动，看当日照片</p>
+            </article>
+            <article class="j-page j-right" id="j-right">
+              <div class="j-photos" id="j-photos"></div>
+              <p class="j-hint">向右滑动，回到文字 →</p>
+            </article>
+          </div>
+        </div>
+      </div>
+      <div class="journal-bar">
+        <button type="button" data-act="go" data-to="j1">书架</button>
+        <button type="button" data-act="rename-pet">改名</button>
+        <button type="button" data-act="journal-prev">‹ 上一篇</button>
+        <button type="button" data-act="journal-next">下一篇 ›</button>
+      </div>
+    </section>
+
+    <!-- 放映室：可手动建角色卡；真互动需日记积累 -->
+    <section class="page page-theater" data-page="t1">
+      <div class="bg theater-bg" style="background-image:url('assets/ami-theater-select-empty.png')"></div>
+      <header class="theater-head">
+        <h1>放映室</h1>
+        <p class="theater-note" id="theater-note">
+          可以先建角色卡；性格互动要靠日记慢慢长出来，需要一些时间完善。
+        </p>
+        <div class="theater-actions">
+          <button type="button" class="shelf-btn" data-act="theater-add">＋ 新建角色卡</button>
+          <button type="button" class="shelf-btn" data-act="theater-manage" id="theater-manage-btn">管理角色</button>
+        </div>
+      </header>
+      <input type="file" id="theater-avatar-file" accept="image/*" hidden />
+      <div class="theater-empty" id="theater-empty">
+        <p>还没有角色卡</p>
+        <span>点上方「新建角色卡」即可占位<br />真正聊得起来，还要多记几篇关于它的日记</span>
+      </div>
+      <div class="theater-pets" id="theater-pets" hidden></div>
+      <button class="back" type="button" data-act="go" data-to="p3">返回</button>
+    </section>
+
+    <!-- 放映室互动：微信式顶栏 + 可滚动中间 + 底栏输入 -->
+    <section class="page page-chat" data-page="t2">
+      <header class="chat-head">
+        <button type="button" data-act="go" data-to="t1" aria-label="返回">‹</button>
+        <div class="chat-head-title">
+          <strong id="chat-pet">—</strong>
+          <em>的放映室</em>
+        </div>
+        <span class="chat-head-tag">放映室</span>
+      </header>
+
+      <div class="chat-scroll" id="chat-scroll">
+        <div class="chat-profile">
+          <button type="button" class="chat-avatar" id="chat-avatar-btn" data-act="pet-avatar" data-pet="" aria-label="设置头像">
+            <img id="chat-avatar-img" alt="" hidden />
+            <span id="chat-avatar-letter">—</span>
+            <i class="chat-avatar-plus">＋</i>
+          </button>
+          <div class="chat-profile-text">
+            <p class="chat-profile-name" id="chat-profile-name">—</p>
+            <p class="chat-profile-hint">点头像可换图 · 下滑看对话</p>
+          </div>
+        </div>
+
+        <div class="chat-card" id="chat-card">
+          <p class="card-title">角色卡 · <span id="card-pet-name">—</span> · 可改</p>
+          <p class="trait-warn" id="trait-warn">
+            可以先建卡、先进来看看。目前收集的信息还不够，还不能够进行比较好的交互——多记几篇日记后，性格会慢慢清晰。
+          </p>
+          <textarea id="trait-text" rows="2" placeholder="性格摘要可先留空，也可自己先写几句…"></textarea>
+        </div>
+
+        <div class="chat-log" id="chat-log"></div>
+      </div>
+
+      <div class="chat-compose">
+        <button class="icon-btn" type="button" data-act="toast" data-msg="可先打字；语音稍后再接" aria-label="语音">🎤</button>
+        <input id="chat-input" type="text" placeholder="跟它说点什么…" autocomplete="off" />
+        <button class="send" type="button" data-act="send-chat">发送</button>
+      </div>
+    </section>
+
+    <!-- 精选回顾：一张宝丽来一张地翻，像相册幻灯片 -->
+    <section class="page page-memories" data-page="m1">
+      <header class="mem-head">
+        <button type="button" data-act="go" data-to="p3">‹ 返回</button>
+        <h1 id="mem-title">窗边的阳光日子</h1>
+      </header>
+      <div class="mem-stage">
+        <div class="mem-rail" id="mem-rail"></div>
+      </div>
+      <div class="mem-dots" id="mem-dots" aria-hidden="true"></div>
+      <p class="mem-tip">左右滑动 · 一张一张看</p>
+    </section>
+
+    <div class="flash" id="flash" hidden></div>
+    <div class="toast" id="toast" hidden></div>
+    <div class="sheet-modal" id="day-modal" hidden>
+      <div class="flip-stage">
+        <div class="day-carousel">
+          <button type="button" class="day-nav day-nav-prev is-invisible" id="day-nav-prev" data-act="day-prev" aria-label="上一张" aria-hidden="true">‹</button>
+          <div class="flip-card" id="day-flip">
+            <div class="flip-face flip-front">
+              <div class="day-polaroid">
+                <div class="day-polaroid-pic">
+                  <img id="day-modal-img" alt="当日拍立得" />
+                </div>
+                <p class="day-polaroid-cap" id="day-modal-cap"></p>
+              </div>
+            </div>
+            <div class="flip-face flip-back">
+              <div class="day-polaroid day-polaroid-back">
+                <p class="day-back-meta" id="day-modal-meta"></p>
+                <div class="day-story" id="day-modal-story"></div>
+                <p class="day-back-hint">轻触翻回正面</p>
+              </div>
+            </div>
+          </div>
+          <button type="button" class="day-nav day-nav-next is-invisible" id="day-nav-next" data-act="day-next" aria-label="下一张" aria-hidden="true">›</button>
+        </div>
+        <p class="day-count" id="day-count" hidden>1 / 1</p>
+        <p class="flip-tip" id="day-flip-tip">轻触照片翻面看故事</p>
+        <button type="button" class="flip-close" data-act="close-modal">收起</button>
+      </div>
+    </div>
+  </div>
+  <script src="app.js?v=20260909e"></script>
+</body>
+</html>
