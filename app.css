@@ -432,6 +432,90 @@ body {
 .ai-setup:active {
   transform: scale(0.96);
 }
+.local-tools {
+  position: absolute;
+  left: 4.5%;
+  bottom: calc(4% + 48px);
+  z-index: 12;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.local-tool {
+  border: 1px solid rgba(47, 52, 48, 0.14);
+  border-radius: 999px;
+  background: rgba(255, 252, 247, 0.94);
+  color: var(--ink-soft);
+  font-size: 0.68rem;
+  padding: 6px 10px;
+  cursor: pointer;
+  box-shadow: 0 3px 10px rgba(47, 52, 48, 0.08);
+  white-space: nowrap;
+}
+.local-tool:active {
+  transform: scale(0.96);
+}
+.local-tool[hidden] {
+  display: none !important;
+}
+.install-sheet {
+  width: min(92%, 360px);
+  max-height: 82%;
+  overflow: auto;
+  background: #fffcf7;
+  border-radius: 16px;
+  padding: 18px 16px 16px;
+  box-shadow: 0 12px 40px rgba(30, 28, 24, 0.28);
+  position: relative;
+}
+.install-close {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  background: transparent;
+  font-size: 1.4rem;
+  cursor: pointer;
+  color: var(--ink-soft);
+}
+.install-sheet h2 {
+  margin: 0 28px 8px 0;
+  font-family: var(--hand);
+  font-weight: 400;
+  font-size: 1.35rem;
+}
+.install-lead,
+.install-url {
+  margin: 0 0 12px;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+.install-block {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  background: #f7f3eb;
+  border-radius: 12px;
+}
+.install-block strong {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 0.88rem;
+}
+.install-block ol {
+  margin: 0;
+  padding-left: 1.2em;
+  font-size: 0.8rem;
+  line-height: 1.55;
+  color: var(--ink);
+}
+.install-block p {
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
 .hit-mic {
   left: 78%;
   top: 80%;
