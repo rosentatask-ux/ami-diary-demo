@@ -1,13 +1,19 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#2f3430" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="阿咪日记" />
   <title>阿咪日记</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="assets/eject-cat.jpg" />
+  <link rel="apple-touch-icon" href="assets/eject-cat.jpg" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Ma+Shan+Zheng&family=Noto+Sans+SC:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="app.css?v=20260910pub" />
+  <link rel="stylesheet" href="app.css?v=20260911a" />
 </head>
 <body>
   <div class="app" id="app">
@@ -29,6 +35,12 @@
       <button class="ghost hit-camera" type="button" data-act="shoot" aria-label="提交吐片"></button>
       <p class="p1-shoot-tip" aria-hidden="true">点击相机，确认拍摄</p>
       <button class="ai-setup" type="button" data-act="setup-llm" aria-label="设置 DeepSeek">AI</button>
+      <div class="local-tools" aria-label="本机数据">
+        <button type="button" class="local-tool" data-act="export-backup" title="导出到电脑文件，不花云费用">导出</button>
+        <button type="button" class="local-tool" data-act="import-backup" title="从备份文件恢复">导入</button>
+        <button type="button" class="local-tool" data-act="install-app" title="安装到主屏幕 / 查看说明" id="install-app-btn">安装</button>
+      </div>
+      <input type="file" id="backup-file" accept="application/json,.json" hidden />
       <button class="fab-journal" type="button" data-act="go" data-to="p3" aria-label="进入月历阅览">
         <span class="fab-journal-spine" aria-hidden="true"></span>
         <span class="fab-journal-face">
@@ -252,6 +264,34 @@
 
     <div class="flash" id="flash" hidden></div>
     <div class="toast" id="toast" hidden></div>
+    <div class="sheet-modal" id="install-modal" hidden>
+      <div class="install-sheet" role="dialog" aria-labelledby="install-title">
+        <button type="button" class="install-close" data-act="close-install" aria-label="关闭">×</button>
+        <h2 id="install-title">装到手机上用</h2>
+        <p class="install-lead">数据只存在这台设备里，不花钱买云。请固定用同一个入口，不要换链接。</p>
+        <div class="install-block">
+          <strong>iPhone / iPad</strong>
+          <ol>
+            <li>用 <b>Safari</b> 打开试用页（不要用微信内置浏览器）</li>
+            <li>点底部分享按钮</li>
+            <li>滑到「添加到主屏幕」→ 添加</li>
+            <li>以后只点主屏幕图标进入，关 App 日记还在</li>
+          </ol>
+        </div>
+        <div class="install-block">
+          <strong>安卓</strong>
+          <ol>
+            <li>有安装包就直接装 APK（允许未知来源）</li>
+            <li>或用 Chrome 打开同一试用页 → 菜单「安装应用 / 添加到主屏幕」</li>
+          </ol>
+        </div>
+        <div class="install-block">
+          <strong>换机 / 防丢失</strong>
+          <p>左下角「导出」把备份存到「文件」或电脑；新设备再「导入」。卸载 App 或清站点数据会丢日记。</p>
+        </div>
+        <p class="install-url">试用页：https://rosentatask-ux.github.io/ami-diary-demo/</p>
+      </div>
+    </div>
     <!-- 全局 BGM：Dreamy Flashback / Kevin MacLeod · CC BY 4.0（见 assets/BGM-LICENSE.txt） -->
     <audio id="bgm-audio" loop preload="auto" autoplay playsinline webkit-playsinline>
       <source src="assets/bgm.mp3" type="audio/mpeg" />
@@ -289,6 +329,13 @@
       </div>
     </div>
   </div>
-  <script src="app.js?v=20260910pub"></script>
+  <script src="app.js?v=20260911a"></script>
+  <script>
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("./sw.js").catch(() => {});
+      });
+    }
+  </script>
 </body>
 </html>
