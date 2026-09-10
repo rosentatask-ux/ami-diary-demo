@@ -241,30 +241,53 @@
         jobs.push(idbPut(`pet:${key}`, p.avatar));
       }
     });
-    if (!jobs.length) return;
-    await Promise.allSettled(jobs);
+    if (!jobs.length) return { ok: true, count: 0 };
+    const results = await Promise.allSettled(jobs);
+    const failed = results.filter((r) => r.status === "rejected").length;
+    return { ok: failed === 0, count: results.length - failed, failed };
+  }
+
+  function slimEntriesForStorage(entries) {
+    return (entries || []).map((e) => {
+      const img = String(e.image || "");
+      let image = img;
+      if (img.startsWith("data:") && e.id) image = blobRef("entry", e.id);
+      return { ...e, image };
+    });
+  }
+
+  function slimPetsForStorage(pets) {
+    return (pets || []).map((p) => {
+      const av = String(p.avatar || "");
+      let avatar = av;
+      if (av.startsWith("data:")) avatar = blobRef("pet", p.id || p.name);
+      return { ...p, avatar };
+    });
   }
 
   async function hydrateBlobs() {
     let changed = false;
+    let missing = 0;
     for (const e of state.entries) {
       const ref = parseBlobRef(e.image);
-      if (ref) {
+      const needs =
+        ref ||
+        (e?.id &&
+          (!e.image ||
+            e.image === "assets/eject-cat.jpg" ||
+            String(e.image).startsWith("__blob__:")));
+      if (!needs && e?.id && !isUsableImage(e.image) && !String(e.image || "").startsWith("assets/")) {
+        // try recover by id
+      }
+      if (ref || (e?.id && (!isUsableImage(e.image) || e.image === "assets/eject-cat.jpg"))) {
+        const key = ref ? `${ref.kind}:${ref.id}` : `entry:${e.id}`;
         try {
-          const data = await idbGet(`${ref.kind}:${ref.id}`);
+          const data = await idbGet(key);
           if (data) {
             e.image = data;
             changed = true;
-          }
-        } catch {
-          /* ignore */
-        }
-      } else if (e?.id && (!e.image || e.image === "assets/eject-cat.jpg")) {
-        try {
-          const data = await idbGet(`entry:${e.id}`);
-          if (data) {
-            e.image = data;
-            changed = true;
+          } else if (ref || String(e.image || "").startsWith("__blob__:")) {
+            missing += 1;
           }
         } catch {
           /* ignore */
@@ -274,9 +297,10 @@
     for (const p of state.pets) {
       const ref = parseBlobRef(p.avatar);
       const key = p.id || p.name;
-      if (ref) {
+      if (ref || (key && !isUsableImage(p.avatar) && p.avatar)) {
+        const idbKey = ref ? `${ref.kind}:${ref.id}` : `pet:${key}`;
         try {
-          const data = await idbGet(`${ref.kind}:${ref.id}`);
+          const data = await idbGet(idbKey);
           if (data) {
             p.avatar = data;
             changed = true;
@@ -302,26 +326,15 @@
       buildTheater();
       syncDraftUI();
     }
+    return { changed, missing };
   }
 
   function savePetsBackup() {
     try {
-      localStorage.setItem(PETS_KEY, JSON.stringify(state.pets));
+      localStorage.setItem(PETS_KEY, JSON.stringify(slimPetsForStorage(state.pets)));
       return true;
     } catch {
-      try {
-        const slim = state.pets.map((p) => {
-          const copy = { ...p };
-          if (copy.avatar && String(copy.avatar).startsWith("data:")) {
-            copy.avatar = blobRef("pet", copy.id || copy.name);
-          }
-          return copy;
-        });
-        localStorage.setItem(PETS_KEY, JSON.stringify(slim));
-        return true;
-      } catch {
-        return false;
-      }
+      return false;
     }
   }
 
@@ -361,9 +374,17 @@
   }
 
   let state = loadState();
+  let saveChain = Promise.resolve();
 
   function saveState() {
-    // 角色卡单独备份，避免整包写失败时丢角色
+    // 串行落盘：先把大图写入 IndexedDB，再把轻量元数据写入 localStorage
+    saveChain = saveChain
+      .catch(() => {})
+      .then(() => saveStateAsync());
+    return saveChain;
+  }
+
+  async function saveStateAsync() {
     savePetsBackup();
 
     const draftSafe = {
@@ -372,6 +393,12 @@
       pet: state.draft.pet || "",
       mediaType: state.draft.mediaType || "image",
     };
+
+    // 先确保持久化大图，避免关机/刷新时只剩文字引用
+    const blobResult = await persistBlobs();
+
+    const slimEntries = slimEntriesForStorage(state.entries);
+    const slimPets = slimPetsForStorage(state.pets);
 
     const write = (entries, pets) => {
       localStorage.setItem(
@@ -388,33 +415,12 @@
       );
     };
 
-    // 优先整图直存（恢复原先可点开/可预览的行为）
-    try {
-      write(state.entries, state.pets);
-      queueBlobPersist();
-      return;
-    } catch {
-      /* 空间不够再降级 */
-    }
-
-    queueBlobPersist();
-    const slimEntries = state.entries.map((e) => ({
-      ...e,
-      image:
-        e.image && String(e.image).startsWith("data:")
-          ? blobRef("entry", e.id)
-          : e.image || "",
-    }));
-    const slimPets = state.pets.map((p) => ({
-      ...p,
-      avatar:
-        p.avatar && String(p.avatar).startsWith("data:")
-          ? blobRef("pet", p.id || p.name)
-          : p.avatar || "",
-    }));
     try {
       write(slimEntries, slimPets);
-      toast("存储偏满：大图已转存，日记与角色仍保留");
+      if (blobResult && blobResult.failed) {
+        toast("部分照片写入本机失败，建议立刻「导出备份」");
+      }
+      return true;
     } catch {
       try {
         write(
@@ -430,10 +436,111 @@
             return copy;
           })
         );
-        toast("存储紧张：已保住文字与角色");
+        toast("存储紧张：已保住文字与角色，照片请导出备份");
+        return false;
       } catch {
-        toast("本机存储不足，请清理后再试");
+        toast("本机存储不足，请先导出备份再清理");
+        return false;
       }
+    }
+  }
+
+  async function requestPersistentStorage() {
+    try {
+      if (!navigator.storage || !navigator.storage.persist) return false;
+      const already = await navigator.storage.persisted();
+      if (already) return true;
+      return await navigator.storage.persist();
+    } catch {
+      return false;
+    }
+  }
+
+  async function exportLocalBackup() {
+    toast("正在打包本机备份…");
+    await saveState();
+    await hydrateBlobs();
+    const payload = {
+      version: 1,
+      app: "ami-diary",
+      exportedAt: new Date().toISOString(),
+      origin: location.origin,
+      state: {
+        entries: state.entries.map((e) => ({ ...e })),
+        todos: state.todos,
+        pets: state.pets.map((p) => ({ ...p })),
+        relations: state.relations || [],
+        calYear: state.calYear,
+        calMonth: state.calMonth,
+      },
+    };
+    const text = JSON.stringify(payload);
+    const day = formatDateISO(new Date());
+    const filename = `ami-diary-backup-${day}.json`;
+    const file = new File([text], filename, { type: "application/json" });
+
+    try {
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({
+          files: [file],
+          title: "阿咪日记备份",
+          text: "本机备份，可导入恢复，不花云费",
+        });
+        toast("请把备份存到「文件」或发到电脑");
+        return;
+      }
+    } catch (err) {
+      if (err && err.name === "AbortError") return;
+    }
+
+    const url = URL.createObjectURL(file);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    toast("备份已保存到本机 · 无云费用");
+  }
+
+  async function importLocalBackupFile(file) {
+    if (!file) return;
+    try {
+      toast("正在导入备份…");
+      const text = await file.text();
+      const data = JSON.parse(text);
+      const incoming = data?.state || data;
+      if (!incoming || !Array.isArray(incoming.entries)) {
+        toast("备份文件格式不对");
+        return;
+      }
+      const ok = window.confirm(
+        "导入会覆盖当前这台设备上的阿咪日记（日记/待办/角色）。建议先点「导出」。确定导入吗？"
+      );
+      if (!ok) return;
+
+      state.entries = incoming.entries.map((e) => ({ ...e }));
+      state.todos = Array.isArray(incoming.todos) ? incoming.todos : [];
+      state.pets = Array.isArray(incoming.pets) ? incoming.pets : [];
+      state.relations = Array.isArray(incoming.relations) ? incoming.relations : [];
+      if (incoming.calYear != null) state.calYear = incoming.calYear;
+      if (incoming.calMonth != null) state.calMonth = incoming.calMonth;
+
+      // 把导入的大图写入 IDB
+      await persistBlobs();
+      await saveState();
+      await hydrateBlobs();
+      ensureTodoDefaults();
+      rebuildRelationsFromDiary();
+      buildCalendar();
+      buildShelf();
+      buildTheater();
+      syncDraftUI();
+      toast(`已导入 ${state.entries.length} 条日记 · 已写入本机`);
+    } catch (err) {
+      console.warn("[ami] import fail", err);
+      toast("导入失败，请换一份备份文件");
     }
   }
 
@@ -2037,7 +2144,7 @@
     if (chute) void chute.offsetWidth;
   }
 
-  function commitPendingEntry() {
+  async function commitPendingEntry() {
     if (!pendingEntry) return;
     // 同日可多张：只追加，不再按 dateISO 覆盖旧片
     state.entries.unshift(pendingEntry);
@@ -2048,7 +2155,7 @@
     state.draft = { text: "", image: "", pet: pendingEntry.pet, mediaType: "image" };
     pendingEntry = null;
     rebuildRelationsFromDiary();
-    saveState();
+    await saveState();
     syncDraftUI();
     buildCalendar();
   }
@@ -2090,10 +2197,11 @@
           setTimeout(() => {
             veil.classList.add("is-clear");
             polaroid.classList.add("is-developed");
-            commitPendingEntry();
-            if (cont) cont.hidden = false;
-            // 照片显影完成后提示已摘录的待办
-            setTimeout(() => flushPendingTodoTip(), 280);
+            void commitPendingEntry().then(() => {
+              if (cont) cont.hidden = false;
+              // 照片显影完成后提示已摘录的待办
+              setTimeout(() => flushPendingTodoTip(), 280);
+            });
           }, 900);
         }, 180);
       }, 380);
@@ -3710,6 +3818,15 @@
       case "setup-llm":
         setupDeepSeekKey();
         break;
+      case "export-backup":
+        exportLocalBackup();
+        break;
+      case "import-backup":
+        document.getElementById("backup-file")?.click();
+        break;
+      case "install-app":
+        promptInstallApp();
+        break;
       case "toggle-bgm":
         toggleBgm();
         break;
@@ -3766,6 +3883,9 @@
         break;
       case "close-modal":
         closeDayModal();
+        break;
+      case "close-install":
+        closeInstallGuide();
         break;
       case "delete-day-entry":
         deleteCurrentDayEntry();
@@ -3827,6 +3947,12 @@
     if (file) await onTheaterAvatarFile(file);
   });
 
+  document.getElementById("backup-file")?.addEventListener("change", async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (file) await importLocalBackupFile(file);
+  });
+
   document.getElementById("todo-add")?.addEventListener("submit", (e) => {
     e.preventDefault();
     const input = document.getElementById("todo-input");
@@ -3852,6 +3978,9 @@
 
   dayModal?.addEventListener("click", (e) => {
     if (e.target === dayModal) closeDayModal();
+  });
+  document.getElementById("install-modal")?.addEventListener("click", (e) => {
+    if (e.target.id === "install-modal") closeInstallGuide();
   });
   document.getElementById("day-flip")?.addEventListener("click", toggleDayFlip);
   bindDaySwipe();
@@ -3898,6 +4027,46 @@
     if (e.key === "Enter") e.preventDefault();
   });
 
+  let deferredInstallPrompt = null;
+
+  function isStandaloneApp() {
+    return (
+      window.matchMedia("(display-mode: standalone)").matches ||
+      window.navigator.standalone === true ||
+      document.referrer.includes("android-app://")
+    );
+  }
+
+  function openInstallGuide() {
+    const modal = document.getElementById("install-modal");
+    if (modal) modal.hidden = false;
+  }
+
+  function closeInstallGuide() {
+    const modal = document.getElementById("install-modal");
+    if (modal) modal.hidden = true;
+  }
+
+  function promptInstallApp() {
+    if (isStandaloneApp()) {
+      toast("已经在主屏幕/应用里 · 日记存在本机");
+      return;
+    }
+    if (deferredInstallPrompt) {
+      deferredInstallPrompt.prompt();
+      deferredInstallPrompt.userChoice.finally(() => {
+        deferredInstallPrompt = null;
+      });
+      return;
+    }
+    openInstallGuide();
+  }
+
+  window.addEventListener("beforeinstallprompt", (e) => {
+    e.preventDefault();
+    deferredInstallPrompt = e;
+  });
+
   // 月历默认对齐「今天」所在月
   {
     const now = new Date();
@@ -3905,13 +4074,38 @@
     if (state.calMonth == null) state.calMonth = now.getMonth();
   }
 
-  ensureTodoDefaults();
-  buildCalendar();
-  syncDraftUI();
-  buildShelf();
-  buildTheater();
-  rebuildRelationsFromDiary();
-  hydrateBlobs().catch(() => {});
-  initBgm();
-  go("p1");
+  async function bootLocalMemory() {
+    ensureTodoDefaults();
+    buildCalendar();
+    syncDraftUI();
+    buildShelf();
+    buildTheater();
+    rebuildRelationsFromDiary();
+    const persisted = await requestPersistentStorage();
+    const hydrated = await hydrateBlobs().catch(() => ({ missing: 0 }));
+    // 把已有大图迁到 IDB，并改成引用式元数据（防止再撑爆）
+    await saveState().catch(() => {});
+    initBgm();
+    go("p1");
+    const n = state.entries.length;
+    if (n > 0) {
+      setTimeout(() => {
+        toast(
+          persisted
+            ? `本机已记住 ${n} 条日记 · 可点左下「导出」备份`
+            : `已加载 ${n} 条 · 建议点左下「导出」备份到电脑`,
+          3200
+        );
+      }, 700);
+    } else {
+      setTimeout(() => {
+        toast("数据默认存在本机浏览器，不花云费 · 重要回忆请「导出」", 3600);
+      }, 800);
+    }
+    if (hydrated?.missing) {
+      setTimeout(() => toast("有照片缺失，若有备份文件请点「导入」恢复", 4000), 4200);
+    }
+  }
+
+  bootLocalMemory();
 })();
